@@ -1,0 +1,2128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>픽셀 식당</title>
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; height: 100vh; overflow: hidden; background: #1d1410; color: #fff3e0;
+         font-family: monospace, "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+         display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  @supports (height: 100dvh) { body { height: 100dvh; } }
+
+  /* These widths are the starting size. The script resizes them so everything fits the window. */
+  #hud { width: min(96vw, 640px); display: flex; justify-content: space-between;
+         align-items: center; flex-wrap: wrap; gap: 4px 12px; font-size: 14px; padding: 4px 2px; }
+  #stage { position: relative; width: min(96vw, 640px); }
+  #stage canvas { display: block; box-sizing: border-box; width: 100%; aspect-ratio: 4 / 3;
+                  image-rendering: pixelated; border: 4px solid #5a3b2e; background: #000; }
+  #help { width: min(96vw, 640px); font-size: 12px; opacity: 0.8; margin-top: 6px; text-align: center; }
+
+  #err { position: fixed; left: 0; right: 0; top: 0; z-index: 99; background: #b00020;
+         color: #fff; padding: 10px; font: 14px monospace; }
+  #toast { position: fixed; right: 10px; bottom: 10px; z-index: 50; background: #1d1410;
+           border: 2px solid #ffd28a; padding: 6px 10px; font-size: 13px; opacity: 0;
+           transition: opacity 0.3s; pointer-events: none; max-width: 80vw; }
+
+  #dialog { position: absolute; left: 2%; right: 2%; bottom: 3%; height: 36%;
+            box-sizing: border-box; background: #1d1410; border: 4px solid #ffd28a;
+            box-shadow: 0 0 0 4px #5a3b2e; padding: 1.1em 1.4em; cursor: pointer;
+            display: flex; flex-direction: column; }
+  #nameplate { position: absolute; top: -1.5em; left: 1em; background: #ffd28a; color: #1d1410;
+               font-weight: bold; padding: 0.15em 0.9em; }
+  #dtext { line-height: 1.5; flex: 1; overflow: hidden; }
+  #dnext { position: absolute; right: 1em; bottom: 0.4em; color: #ffd28a;
+           animation: blink 0.8s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  #skipBtn { position: absolute; top: 12px; right: 12px; z-index: 3; }
+
+  .overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, 0.8);
+             display: flex; flex-direction: column; align-items: center;
+             justify-content: center; justify-content: safe center;
+             gap: 10px; padding: 12px; box-sizing: border-box; text-align: center; overflow: auto; }
+  .overlay h1 { margin: 0; font-size: 30px; }
+  .overlay p { margin: 0; max-width: 460px; font-size: 14px; line-height: 1.4; }
+  @media (max-height: 640px) {
+    .overlay h1 { font-size: 24px; }
+    .overlay p { font-size: 13px; }
+    .overlay { gap: 8px; }
+  }
+  #overlay { z-index: 5; }
+  #admin { z-index: 8; }
+  #settings { z-index: 10; }
+  .hidden { display: none !important; }
+  button { font-family: inherit; font-weight: bold; font-size: 16px; padding: 8px 16px; border: 0;
+           background: #ffd28a; cursor: pointer; }
+  button.small { font-size: 13px; padding: 5px 10px; }
+  button.active { outline: 3px solid #fff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #quit { background: #ff8a80; }
+  label.check { font-size: 15px; cursor: pointer; }
+  .note { font-size: 13px; opacity: 0.7; }
+  .buttons { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; align-items: center; max-width: 520px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <span id="dayInfo"></span>
+  <span><span data-i18n="score">점수</span>: <strong id="score">0</strong></span>
+  <span><span data-i18n="served">서빙</span>: <strong id="served">0</strong></span>
+  <span id="lives" style="color:#ff6b5e"></span>
+  <span>
+    <button class="small" id="gear" onclick="gearClick()" data-i18n="settings">설정</button>
+    <button class="small" id="quit" onclick="quitShift()" style="visibility:hidden" data-i18n="quit">그만두기</button>
+  </span>
+</div>
+
+<div id="stage">
+  <canvas id="c" width="320" height="240"></canvas>
+  <button class="small hidden" id="skipBtn" onclick="skipScene()" data-i18n="skip">건너뛰기</button>
+  <div id="dialog" class="hidden">
+    <div id="nameplate"></div>
+    <div id="dtext"></div>
+    <div id="dnext">&#9660;</div>
+  </div>
+</div>
+
+<div id="help" data-i18n="help"></div>
+
+<!-- Menu / results screen. These buttons work straight from the HTML. -->
+<div id="overlay" class="overlay">
+  <h1 id="title">픽셀 식당</h1>
+  <p id="sub"></p>
+  <div class="buttons" id="menuButtons">
+    <button onclick="showStorySelect()">스토리 모드</button>
+    <button onclick="showEndlessSelect()">무한 모드</button>
+    <button onclick="openSettings()">설정</button>
+  </div>
+  <p class="note" id="status">게임을 불러오는 중...</p>
+</div>
+
+<!-- Admin menu (type a-d-m-i-n on the main menu to open it) -->
+<div id="admin" class="overlay hidden">
+  <h1 data-i18n="adminTitle"></h1>
+  <p class="note" data-i18n="adminNote"></p>
+  <p data-i18n="adminStory"></p>
+  <div class="buttons" id="adminStories"></div>
+  <p data-i18n="adminDay"></p>
+  <div class="buttons" id="adminDays"></div>
+  <div class="buttons">
+    <button onclick="adminPlay('before')" data-i18n="adminBefore"></button>
+    <button onclick="adminPlay('after')" data-i18n="adminAfter"></button>
+    <button onclick="adminPlay('day')" data-i18n="adminPlay"></button>
+  </div>
+  <div class="buttons">
+    <span data-i18n="adminSpeed"></span>
+    <input type="range" id="adminSpeed" min="20" max="240" step="5" oninput="setAdminSpeed(this.value)">
+    <strong id="adminSpeedVal"></strong>
+    <button class="small" onclick="adminResetSpeed()" data-i18n="adminReset"></button>
+  </div>
+  <div class="buttons">
+    <button onclick="closeAdmin()" data-i18n="adminClose"></button>
+  </div>
+</div>
+
+<!-- Settings screen -->
+<div id="settings" class="overlay hidden">
+  <h1 data-i18n="settingsTitle">설정</h1>
+  <div class="buttons">
+    <span data-i18n="language">언어</span>
+    <button class="small" data-l="ko" onclick="setLanguage('ko')">한국어</button>
+    <button class="small" data-l="en" onclick="setLanguage('en')">English</button>
+  </div>
+  <div class="buttons" id="difficulty">
+    <button class="small" data-d="easy" onclick="setDifficulty('easy')" data-i18n="easy">쉬움</button>
+    <button class="small" data-d="normal" onclick="setDifficulty('normal')" data-i18n="normal">보통</button>
+    <button class="small" data-d="hard" onclick="setDifficulty('hard')" data-i18n="hard">어려움</button>
+  </div>
+  <p id="diffInfo"></p>
+  <p class="note" data-i18n="diffNote"></p>
+  <label class="check"><input type="checkbox" id="sound" onchange="setSound(this.checked)"> <span data-i18n="sound"></span></label>
+  <label class="check"><input type="checkbox" id="prompt" onchange="setPrompt(this.checked)"> <span data-i18n="prompt"></span></label>
+  <div class="buttons">
+    <button class="small" onclick="exportSave()" data-i18n="copySave"></button>
+    <button class="small" onclick="importSave()" data-i18n="loadSave"></button>
+    <button class="small" onclick="resetProgress()" data-i18n="resetProgress"></button>
+  </div>
+  <p class="note" data-i18n="saveNote"></p>
+  <div class="buttons">
+    <button id="doneBtn" onclick="closeSettings()" data-i18n="ok">확인</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+<div id="err" class="hidden"></div>
+
+<!-- Error catcher: shows any problem in a red bar at the top of the page -->
+<script>
+  window.addEventListener("error", function (e) {
+    var box = document.getElementById("err");
+    box.textContent = "Error: " + e.message + " (line " + e.lineno + ")";
+    box.classList.remove("hidden");
+  });
+</script>
+
+<script>
+  // =====================================================================
+  //  CONSTANTS
+  // =====================================================================
+  var W = 320, H = 240;
+  var SPEED = 80;                       // player speed in pixels per second
+  var DAY_GOALS = [6, 8, 10, 12, 15];   // customers to serve on Day 1, 2, 3, 4, 5
+  var DIFFICULTY = {
+    easy:   { lives: 7, patience: 70, spawn: 11 },
+    normal: { lives: 5, patience: 55, spawn: 9 },
+    hard:   { lives: 3, patience: 35, spawn: 6 }
+  };
+  var STORY_ORDER = ["burger", "kimbap", "pizza", "chicken"];   // also the restaurant ids
+
+  // =====================================================================
+  //  TEXT: every word the game shows, in Korean (ko) and English (en)
+  //  {0}, {1}... are filled in by the game. Use single quotes inside text.
+  // =====================================================================
+  var TXT = {
+    ko: {
+      title: "픽셀 식당", score: "점수", served: "서빙", settings: "설정", quit: "그만두기", skip: "건너뛰기",
+      help: "이동: WASD / 방향키 | 상호작용: E / 스페이스 / 엔터 | 설정: Esc | 그만두기: 오른쪽 위",
+      loadedOk: "게임 준비 완료",
+      mainSub: "스토리: 식당을 골라 새로운 사장님과 5일을 보내요. 무한 모드: 식당을 골라 목숨이 다할 때까지 손님을 받아요.",
+      storyMode: "스토리 모드", endlessMode: "무한 모드", back: "뒤로",
+      chooseStory: "이야기 선택",
+      storySub: "햄버거: 호통치는 사장님. 김밥: 겸손한 사장님. 피자: 만사 귀찮은 사장님. 치킨: 돈을 사랑하는 사장님. 이야기마다 5일이 있고, 아무거나 먼저 시작해도 돼요.",
+      endlessSub: "식당을 고르세요. 목숨이 다할 때까지 손님이 계속 와요.",
+      complete: "완료", dayTag: "{0}일차", bestShort: "최고 {0}",
+      story_burger: "햄버거 이야기", story_kimbap: "김밥 이야기", story_pizza: "피자 이야기", story_chicken: "치킨 이야기",
+      r_burger: "햄버거 가게", r_kimbap: "김밥집", r_pizza: "피자 가게", r_chicken: "치킨집",
+      rs_burger: "햄버거", rs_kimbap: "김밥", rs_pizza: "피자", rs_chicken: "치킨",
+      boss_burger: "사장님", boss_kimbap: "김 사장님", boss_pizza: "비니", boss_chicken: "얼 사장님", you: "나",
+      sign_burger: "햄버거", sign_kimbap: "김밥", sign_pizza: "피자리아", sign_chicken: "치킨",
+      f_patty: "패티", f_cheese: "치즈", f_lettuce: "상추", f_tomato: "토마토",
+      f_egg: "계란", f_carrot: "당근", f_spinach: "시금치", f_ham: "햄",
+      f_sauce: "소스", f_mozz: "치즈", f_pepperoni: "페퍼로니", f_basil: "바질",
+      f_chicken: "치킨", f_fries: "감자튀김", f_slaw: "샐러드", f_biscuit: "비스킷", trash: "쓰레기통",
+      settingsTitle: "설정", language: "언어", easy: "쉬움", normal: "보통", hard: "어려움",
+      diffInfo: "{0}: 목숨 {1}개, 손님이 약 {2}초 기다리고 {3}초마다 새 손님이 와요.",
+      diffNote: "난이도는 근무와 근무 사이에만 바꿀 수 있어요.",
+      sound: "효과음", prompt: "상호작용 표시 보기", ok: "확인",
+      resetProgress: "이야기 진행 초기화", confirmReset: "네 가지 이야기의 진행을 모두 초기화할까요?",
+      copySave: "저장 코드 복사", loadSave: "저장 코드 불러오기",
+      saveNote: "진행 상황, 최고 기록, 설정은 자동으로 이 브라우저에 저장돼요.",
+      exportMsg: "아래 저장 코드를 복사해 두세요. 나중에 '저장 코드 불러오기'로 복원할 수 있어요.",
+      importMsg: "저장 코드를 붙여 넣으세요:", badCode: "저장 코드가 올바르지 않아요.",
+      saved: "저장됨", loaded: "불러왔어요", saveFail: "이 브라우저에서는 자동 저장이 안 돼요. 설정의 저장 코드를 사용하세요.",
+      shiftOver: "근무 종료", failStory: "목숨이 다하기 전에 손님 {0}/{1}명을 서빙했어요.",
+      result: "손님 {0}명을 서빙하고 {1}점을 얻었어요.", best: "최고 기록: {0}명", newBest: "새 최고 기록!",
+      tryAgain: "다시 도전", playAgain: "다시 하기", mainMenu: "메인 메뉴",
+      nextDay: "다음 날", replayDay: "이 날 다시 하기", replayStory: "이야기 다시 하기",
+      dayDone: "{0}일차 완료!", storyDone: "이야기 완료!", storyDoneSub: "{0}의 5일을 모두 마쳤어요. {1}",
+      trayFull: "쟁반이 가득 찼어요", bringFood: "음식을 가져오세요!", wrongOrder: "주문이 달라요!", angry: "화났어요!",
+      dayStart: "{0}일차: 손님 {1}명 서빙!", dayInfo: "{0} {1}일차", endlessInfo: "{0} (무한)",
+      adminTitle: "관리자 메뉴",
+      adminNote: "테스트용이에요. 여기서 시작한 날은 저장된 진행 상황을 바꾸지 않아요. 걷는 속도는 저장되지 않고, 게임을 껐다 켜면 원래대로 돌아가요.",
+      adminStory: "이야기 선택", adminDay: "날짜 선택",
+      adminBefore: "시작 대사 보기", adminAfter: "끝 대사 보기", adminPlay: "이 날 플레이",
+      adminSpeed: "걷는 속도", adminReset: "속도 초기화", adminClose: "닫기",
+      adminOn: "관리자 메뉴가 열렸어요", adminBtn: "관리자 메뉴"
+    },
+    en: {
+      title: "Pixel Diner", score: "Score", served: "Served", settings: "Settings", quit: "Quit", skip: "Skip",
+      help: "Move: WASD / arrows | Interact: E / Space / Enter | Settings: Esc | Quit: top right",
+      loadedOk: "Game script loaded OK",
+      mainSub: "Story: pick a restaurant and work through 5 days with a new boss. Endless: pick a restaurant and keep serving until you run out of lives.",
+      storyMode: "Story mode", endlessMode: "Endless mode", back: "Back",
+      chooseStory: "Choose a story",
+      storySub: "Burger: a bossy boss. Kimbap: a humble boss. Pizza: a boss who doesn't care. Chicken: a boss who loves money. Each story has 5 days, and you can start any of them.",
+      endlessSub: "Pick a restaurant. Customers keep coming until you run out of lives.",
+      complete: "complete", dayTag: "Day {0}", bestShort: "best {0}",
+      story_burger: "Burger story", story_kimbap: "Kimbap story", story_pizza: "Pizzeria story", story_chicken: "Fried chicken story",
+      r_burger: "Burger Restaurant", r_kimbap: "Kimbap Restaurant", r_pizza: "Pizzeria", r_chicken: "Fried Chicken Restaurant",
+      rs_burger: "Burger", rs_kimbap: "Kimbap", rs_pizza: "Pizzeria", rs_chicken: "Chicken",
+      boss_burger: "Boss", boss_kimbap: "Mr. Kim", boss_pizza: "Vinny", boss_chicken: "Earl", you: "You",
+      sign_burger: "DINER", sign_kimbap: "KIMBAP", sign_pizza: "PIZZERIA", sign_chicken: "CHICKEN",
+      f_patty: "patty", f_cheese: "cheese", f_lettuce: "lettuce", f_tomato: "tomato",
+      f_egg: "egg", f_carrot: "carrot", f_spinach: "spinach", f_ham: "ham",
+      f_sauce: "sauce", f_mozz: "cheese", f_pepperoni: "pepperoni", f_basil: "basil",
+      f_chicken: "chicken", f_fries: "fries", f_slaw: "slaw", f_biscuit: "biscuit", trash: "trash",
+      settingsTitle: "Settings", language: "Language", easy: "Easy", normal: "Normal", hard: "Hard",
+      diffInfo: "{0}: {1} lives, customers wait about {2}s, a new customer every {3}s.",
+      diffNote: "Difficulty can only be changed between shifts.",
+      sound: "Sound effects", prompt: "Show the interaction prompt", ok: "OK",
+      resetProgress: "Reset story progress", confirmReset: "Reset your progress in all four stories?",
+      copySave: "Copy save code", loadSave: "Load save code",
+      saveNote: "Your progress, best scores, and settings are saved automatically in this browser.",
+      exportMsg: "Copy the save code below. You can restore it later with 'Load save code'.",
+      importMsg: "Paste your save code:", badCode: "That save code is not valid.",
+      saved: "Saved", loaded: "Loaded", saveFail: "Automatic saving doesn't work in this browser. Use the save code in Settings.",
+      shiftOver: "Shift over", failStory: "You served {0}/{1} customers before running out of lives.",
+      result: "You served {0} customers and scored {1} points.", best: "Best: {0} customers", newBest: "New best!",
+      tryAgain: "Try again", playAgain: "Play again", mainMenu: "Main menu",
+      nextDay: "Next day", replayDay: "Replay day", replayStory: "Replay story",
+      dayDone: "Day {0} complete!", storyDone: "Story complete!", storyDoneSub: "You finished all 5 days of the {0}. {1}",
+      trayFull: "Tray full", bringFood: "Bring food!", wrongOrder: "Not my order!", angry: "Angry!",
+      dayStart: "Day {0}: serve {1} customers!", dayInfo: "{0}, Day {1}", endlessInfo: "{0} (Endless)",
+      adminTitle: "Admin menu",
+      adminNote: "For testing. Days started here don't change your saved progress. Walk speed is not saved and goes back to normal when you reload the game.",
+      adminStory: "Pick a story", adminDay: "Pick a day",
+      adminBefore: "Watch opening scene", adminAfter: "Watch ending scene", adminPlay: "Play this day",
+      adminSpeed: "Walk speed", adminReset: "Reset speed", adminClose: "Close",
+      adminOn: "Admin menu unlocked", adminBtn: "Admin menu"
+    }
+  };
+
+  function t(key) {
+    var s = TXT[S.lang][key];
+    if (s === undefined) s = TXT.en[key];
+    for (var i = 1; i < arguments.length; i++) s = s.split("{" + (i - 1) + "}").join(arguments[i]);
+    return s;
+  }
+
+  // =====================================================================
+  //  STORY SCRIPT: edit the dialogue here
+  //  Each line is ["b", "text"] for the boss or ["y", "text"] for you.
+  //  Every day has "before" (plays before the shift) and "after" (plays after you win),
+  //  each written in English (en) and Korean (ko).
+  //  Keep each line fairly short so it fits in the textbox.
+  //  Use single quotes inside a line, like 'this', never double quotes.
+  // =====================================================================
+  function L(arr) {
+    return arr.map(function (l) { return { who: l[0] === "b" ? "boss" : "you", text: l[1] }; });
+  }
+
+  var STORIES = {
+
+    // ---------------- BURGER: a bossy boss ----------------
+    burger: { look: "grumpy", days: [
+      { // Day 1
+        before: {
+          en: [
+            ["b", "Sit. Don't touch anything on my desk. Especially the stapler."],
+            ["b", "Let's get one thing straight. I did NOT want to hire you."],
+            ["y", "Um... thanks for the interview?"],
+            ["b", "That wasn't an interview. I pointed at you in the hallway. Don't get excited."],
+            ["b", "The truth is, I had no choice. Every cook and waiter in this place quit. All of them. In one week!"],
+            ["b", "Customers are lining up out the door and nobody is left to feed them. So guess who got lucky?"],
+            ["b", "You. Try not to burn the place down on your first day."],
+            ["b", "Rule one: the customer is always right, and always in a hurry. Rule two: I am always right."],
+            ["b", "Rule three: stack the burgers in the right order. The last guy put the tomato under the patty. We don't talk about him."],
+            ["b", "Now stop gawking. Fine, you're hired! Get to the kitchen before I change my mind!"]
+          ],
+          ko: [
+            ["b", "앉아. 내 책상에 아무것도 건드리지 마. 특히 스테이플러는."],
+            ["b", "분명히 해 두지. 난 너를 고용하고 싶지 않았어."],
+            ["y", "저... 면접 봐 주셔서 감사합니다?"],
+            ["b", "그건 면접이 아니야. 복도에서 널 가리켰을 뿐이라고. 기대하지 마."],
+            ["b", "솔직히 선택의 여지가 없었어. 이 가게 요리사랑 직원이 전부 그만뒀거든. 전부! 일주일 만에!"],
+            ["b", "손님은 가게 밖까지 줄을 서 있는데 음식을 만들 사람이 없어. 그래서 누가 운이 좋았게?"],
+            ["b", "바로 너야. 첫날부터 가게를 태워 먹지나 마."],
+            ["b", "규칙 하나, 손님은 언제나 옳고 언제나 급하다. 규칙 둘, 나는 언제나 옳다."],
+            ["b", "규칙 셋, 햄버거는 순서대로 쌓아. 전에 있던 놈은 토마토를 패티 밑에 깔았어. 그 얘긴 하지 말자."],
+            ["b", "이제 멍하니 서 있지 마. 좋아, 넌 채용이야! 내 마음이 바뀌기 전에 어서 주방으로 가!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Hmph. Six customers served and nobody got food poisoning."],
+            ["b", "Don't let it go to your head. Six is nothing. I once served eighty. Uphill. In the snow."],
+            ["y", "Does this mean I get to keep the job?"],
+            ["b", "It means you get to come back tomorrow. That's different. Now go mop something."]
+          ],
+          ko: [
+            ["b", "흥. 손님 여섯 명을 서빙했는데 식중독은 없었군."],
+            ["b", "우쭐대지 마. 여섯은 아무것도 아니야. 난 팔십 명도 받아 봤어. 오르막길에서. 눈이 오는데."],
+            ["y", "그럼 계속 일해도 되나요?"],
+            ["b", "내일도 나오라는 뜻이야. 그건 다른 얘기지. 이제 가서 바닥이나 닦아."]
+          ]
+        }
+      },
+      { // Day 2
+        before: {
+          en: [
+            ["b", "Day two. You're still here? Huh. I had ten bucks on you quitting by lunch."],
+            ["b", "Rule four: EVERY burger gets a patty. A burger without a patty is just a sad salad sandwich."],
+            ["y", "Got it. Patty first, then the toppings in order."],
+            ["b", "Don't repeat my rules back to me like a parrot. Just do them. Now move!"]
+          ],
+          ko: [
+            ["b", "이틀째네. 아직 있어? 흠. 점심 전에 그만둔다는 데 만 원 걸었는데."],
+            ["b", "규칙 넷, 햄버거에는 무조건 패티! 패티 없는 햄버거는 그냥 슬픈 채소 샌드위치야."],
+            ["y", "알겠습니다. 패티 먼저, 그다음 재료를 순서대로요."],
+            ["b", "앵무새처럼 따라 하지 마. 그냥 해. 어서 움직여!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Not terrible. I've seen worse. Mostly from me, back in my twenties."],
+            ["b", "Go home. Sleep. Tomorrow a food critic is coming, and she hates everything."]
+          ],
+          ko: [
+            ["b", "나쁘지 않았어. 더 심한 것도 봤지. 대부분 내 이십 대 때였지만."],
+            ["b", "집에 가서 자. 내일은 음식 평론가가 오는데, 그 사람은 모든 걸 싫어해."]
+          ]
+        }
+      },
+      { // Day 3
+        before: {
+          en: [
+            ["b", "The critic is here. Middle table. Face like a lemon. Don't make eye contact."],
+            ["b", "If she hates the food, it's your fault. If she loves it, it was my recipe."],
+            ["y", "Understood, boss."]
+          ],
+          ko: [
+            ["b", "평론가 왔다. 가운데 테이블. 얼굴이 레몬 같아. 눈 마주치지 마."],
+            ["b", "음식이 별로면 네 탓이고, 좋으면 내 레시피 덕이야."],
+            ["y", "알겠습니다, 사장님."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "She cleaned her plate. Then she LEFT A TIP. Nobody has ever tipped in this place."],
+            ["b", "Don't tell anyone I'm smiling. I'm not smiling. It's gas."]
+          ],
+          ko: [
+            ["b", "접시를 싹 비웠어. 게다가 팁까지 놓고 갔다고! 이 가게에서 팁은 처음이야."],
+            ["b", "내가 웃고 있다고 말하지 마. 안 웃고 있어. 가스 찬 거야."]
+          ]
+        }
+      },
+      { // Day 4
+        before: {
+          en: [
+            ["b", "Three new waiters applied this week. All three quit during the interview."],
+            ["b", "So it's still just you. And a tour bus just parked outside. Fifty hungry tourists."],
+            ["y", "FIFTY?!"],
+            ["b", "Don't panic. Panic is for customers. Now go!"]
+          ],
+          ko: [
+            ["b", "이번 주에 웨이터 세 명이 지원했어. 셋 다 면접 중에 그만뒀지."],
+            ["b", "그러니까 여전히 너 혼자야. 게다가 방금 관광버스가 가게 앞에 섰어. 배고픈 관광객 오십 명."],
+            ["y", "오십 명이요?!"],
+            ["b", "당황하지 마. 당황은 손님들이나 하는 거야. 어서 가!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Fifty customers and not one complaint to my face. Hmm. Impressive."],
+            ["b", "Tomorrow the mayor visits. Wear a clean apron. Or at least a cleaner one."]
+          ],
+          ko: [
+            ["b", "오십 명인데 내 앞에서 불평한 사람이 하나도 없네. 흠. 인상적이군."],
+            ["b", "내일은 시장님이 방문해. 깨끗한 앞치마를 입어. 아니면 덜 더러운 거라도."]
+          ]
+        }
+      },
+      { // Day 5
+        before: {
+          en: [
+            ["b", "Final day of the week. The mayor's coming, and I want every burger perfect."],
+            ["b", "Perfect means a patty, the right order, and FAST. Fast, perfect, and quiet."],
+            ["y", "I'll do my best!"],
+            ["b", "Your best is the minimum. Go beyond it!"]
+          ],
+          ko: [
+            ["b", "이번 주 마지막 날이야. 시장님이 오시니까 햄버거는 전부 완벽해야 해."],
+            ["b", "완벽하다는 건 패티가 있고, 순서가 맞고, 빠르다는 거야. 빠르고, 완벽하고, 조용하게."],
+            ["y", "최선을 다하겠습니다!"],
+            ["b", "최선은 최소한이야. 그 이상을 해!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "The mayor said it's the best burger in town. I said, 'Of course. I trained them.'"],
+            ["b", "I'm giving you a raise. A small one. Microscopic. Don't spend it all in one place."],
+            ["y", "Thank you, boss!"],
+            ["b", "Stop thanking me. ...Fine. Good work this week, kid. Now go mop something."]
+          ],
+          ko: [
+            ["b", "시장님이 이 동네 최고의 햄버거래. 내가 말했지. '당연하죠. 제가 가르쳤거든요.'"],
+            ["b", "월급 올려 주지. 조금만. 아주 눈곱만큼. 한 번에 다 쓰지 마."],
+            ["y", "감사합니다, 사장님!"],
+            ["b", "고맙다고 하지 마. ...좋아. 이번 주 수고했다, 꼬맹이. 이제 가서 바닥이나 닦아."]
+          ]
+        }
+      }
+    ] },
+
+    // ---------------- KIMBAP: a humble boss ----------------
+    kimbap: { look: "humble", days: [
+      { // Day 1
+        before: {
+          en: [
+            ["b", "Ah, welcome, welcome! Please, sit. Would you like some tea? Or a kimbap? I rolled one this morning."],
+            ["y", "Oh, no thank you, I'm fine!"],
+            ["b", "Then please take it for later. A hungry cook is a sad cook."],
+            ["b", "Forgive my little restaurant. It is not much. A few tables, a pot of rice, and an old man."],
+            ["y", "It looks wonderful."],
+            ["b", "You are too kind. My wife and I opened this place thirty years ago, rolling kimbap every morning."],
+            ["b", "Now my hands are slow, and my helper moved away to be with her family. I am a little lost, to be honest."],
+            ["b", "I cannot pay you much, and I am sorry for that. But I promise you will never go hungry here."],
+            ["y", "I'd love to help."],
+            ["b", "Truly? Then I am honored. Thank you, thank you. Welcome to the family. You are hired!"]
+          ],
+          ko: [
+            ["b", "아이고, 어서 오세요! 앉으세요. 차 한잔 드릴까요? 아니면 김밥? 오늘 아침에 말아 둔 게 있어요."],
+            ["y", "아, 괜찮습니다!"],
+            ["b", "그럼 나중에 드시라고 싸 드릴게요. 배고픈 요리사는 슬프거든요."],
+            ["b", "작은 가게라 죄송해요. 테이블 몇 개랑 밥솥 하나, 그리고 늙은이 하나가 전부예요."],
+            ["y", "정말 멋진 가게예요."],
+            ["b", "좋게 봐 주셔서 고마워요. 삼십 년 전에 아내랑 이 가게를 열고 매일 아침 김밥을 말았지요."],
+            ["b", "이제는 손이 느려졌고, 도와주던 분도 가족 곁으로 가셨어요. 솔직히 조금 막막하네요."],
+            ["b", "월급을 많이 못 드려서 미안해요. 대신 배곯지 않게는 해 드릴게요. 약속해요."],
+            ["y", "도와드리고 싶어요."],
+            ["b", "정말요? 영광이에요. 고맙습니다, 고마워요. 우리 식구가 되신 걸 환영해요. 채용입니다!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Six customers, and every roll was neat. Thank you. Truly."],
+            ["b", "Please, sit and eat with me. This is how we end every day here."]
+          ],
+          ko: [
+            ["b", "손님 여섯 분인데 김밥이 하나같이 단정했어요. 고마워요, 정말로."],
+            ["b", "자, 앉아서 같이 드세요. 우리 가게는 매일 이렇게 하루를 마친답니다."]
+          ]
+        }
+      },
+      { // Day 2
+        before: {
+          en: [
+            ["b", "Good morning! I woke early to cook the rice. I hope that is not troubling you."],
+            ["b", "The school lets out early today, so many young customers will come. Please be patient with them."],
+            ["y", "Of course!"],
+            ["b", "Thank you. Remember, each roll is a little gift. Roll it with care."]
+          ],
+          ko: [
+            ["b", "좋은 아침이에요! 일찍 일어나 밥을 지어 놨어요. 폐가 되지 않았으면 좋겠네요."],
+            ["b", "오늘은 학교가 일찍 끝나서 어린 손님들이 많이 올 거예요. 너그럽게 봐 주세요."],
+            ["y", "그럼요!"],
+            ["b", "고마워요. 김밥 한 줄 한 줄이 작은 선물이에요. 정성껏 말아 주세요."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "The children left smiling. That is the best payment an old man could ask for."],
+            ["b", "I made extra kimbap for you to take home. Please do not refuse, or I will be sad."]
+          ],
+          ko: [
+            ["b", "아이들이 웃으며 돌아갔어요. 늙은이가 받을 수 있는 가장 좋은 품삯이지요."],
+            ["b", "집에 가져가 드시라고 김밥을 넉넉히 쌌어요. 거절하시면 제가 서운해요."]
+          ]
+        }
+      },
+      { // Day 3
+        before: {
+          en: [
+            ["b", "Today is my wife's birthday. She is at the market, buying far too many flowers again."],
+            ["b", "It is an ordinary day for our guests, but I would like it to feel special. Will you help me?"],
+            ["y", "Absolutely."],
+            ["b", "You are a good person. Thank you. Let us cook with love today."]
+          ],
+          ko: [
+            ["b", "오늘이 아내 생일이에요. 시장에서 또 꽃을 한가득 사고 있을 거예요."],
+            ["b", "손님들에겐 평범한 날이지만, 특별한 하루로 만들고 싶어요. 도와주실래요?"],
+            ["y", "물론이죠."],
+            ["b", "참 좋은 분이에요. 고마워요. 오늘은 사랑을 담아 만들어 봐요."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "My wife came home with a bouquet for you. She says thank you for taking care of her husband."],
+            ["b", "I did not know a restaurant could feel this warm again. Thank you."]
+          ],
+          ko: [
+            ["b", "아내가 돌아와서 꽃다발을 건네더군요. 남편을 잘 챙겨 줘서 고맙다고 하네요."],
+            ["b", "가게가 이렇게 따뜻할 수 있다는 걸 잊고 있었어요. 고마워요."]
+          ]
+        }
+      },
+      { // Day 4
+        before: {
+          en: [
+            ["b", "A man from a big restaurant chain visited yesterday. He offered a lot of money for my little shop."],
+            ["b", "I said no, thank you. But I wondered what you think. Am I a foolish old man?"],
+            ["y", "I think this place is perfect just the way it is."],
+            ["b", "Hehe. Then it is decided. Today, let us show everyone how a small restaurant shines."]
+          ],
+          ko: [
+            ["b", "어제 큰 프랜차이즈에서 사람이 왔어요. 제 작은 가게를 큰돈에 사겠다고 하더군요."],
+            ["b", "거절했지만 어떻게 생각하는지 궁금해요. 제가 어리석은 노인일까요?"],
+            ["y", "이 가게는 지금 모습 그대로 완벽하다고 생각해요."],
+            ["b", "허허. 그럼 정해졌네요. 오늘은 작은 가게가 얼마나 빛나는지 보여 줍시다."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Every table full! A small place with a big heart. Thank you, my friend."],
+            ["b", "Tomorrow my daughter is visiting. I would like her to meet you."]
+          ],
+          ko: [
+            ["b", "테이블이 꽉 찼어요! 작은 가게에 큰 마음이 가득하네요. 고마워요, 친구."],
+            ["b", "내일은 딸이 찾아와요. 꼭 소개해 드리고 싶어요."]
+          ]
+        }
+      },
+      { // Day 5
+        before: {
+          en: [
+            ["b", "My daughter worries that I work too hard. I told her I have a wonderful helper now. She does not believe me."],
+            ["b", "Today many guests are coming. Please do your best, but do not hurt yourself. Okay?"],
+            ["y", "I'll be careful. Let's do this!"]
+          ],
+          ko: [
+            ["b", "딸은 제가 일을 너무 많이 한다고 걱정해요. 든든한 일손이 생겼다고 했더니 믿지 않더군요."],
+            ["b", "오늘은 손님이 많이 오실 거예요. 최선을 다하되, 다치지는 말아 주세요. 알겠죠?"],
+            ["y", "조심할게요. 해 봐요!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "What a day! My daughter was so proud. She says you are part of the family now."],
+            ["b", "I cannot offer much, but this restaurant is yours too. Please come back tomorrow. And the day after. And always."],
+            ["y", "I'll be here."],
+            ["b", "Then I am the luckiest old man in the world. Now, let us eat!"]
+          ],
+          ko: [
+            ["b", "정말 대단한 하루였어요! 딸이 얼마나 뿌듯해하던지. 이제 가족이래요."],
+            ["b", "많이 드리지는 못하지만 이 가게는 이제 당신 가게이기도 해요. 내일도, 모레도, 언제까지나 와 주세요."],
+            ["y", "계속 여기 있을게요."],
+            ["b", "그럼 제가 세상에서 가장 운 좋은 노인이네요. 자, 이제 같이 먹어요!"]
+          ]
+        }
+      }
+    ] },
+
+    // ---------------- PIZZERIA: a boss who doesn't care ----------------
+    pizza: { look: "lazy", days: [
+      { // Day 1
+        before: {
+          en: [
+            ["b", "Mm? Oh. You're the applicant. Sit. Or don't. A chair is a chair."],
+            ["y", "Hi! I'm here about the cook position?"],
+            ["b", "Sure. Whatever. Do you know how to make pizza?"],
+            ["y", "A little."],
+            ["b", "Cool. Close enough. Hey, is it Tuesday?"],
+            ["y", "It's Friday."],
+            ["b", "Huh. Good for Friday."],
+            ["b", "The oven's over there. The sauce is... somewhere. Customers show up, you make food. That's the whole job."],
+            ["y", "Don't you want to see my resume?"],
+            ["b", "Nah. If you burn the place down it's insured. Probably. You're hired. Sure. Go do pizza."]
+          ],
+          ko: [
+            ["b", "응? 아, 지원자구나. 앉아. 아니면 말고. 의자는 그냥 의자야."],
+            ["y", "안녕하세요! 요리사 자리 때문에 왔어요."],
+            ["b", "그래, 뭐. 피자 만들 줄 알아?"],
+            ["y", "조금요."],
+            ["b", "좋아. 그 정도면 됐어. 근데 오늘 화요일이야?"],
+            ["y", "금요일이에요."],
+            ["b", "오. 금요일치곤 괜찮네."],
+            ["b", "오븐은 저기 있어. 소스는... 어딘가에 있을 거야. 손님 오면 음식 만들어. 그게 일의 전부야."],
+            ["y", "이력서는 안 보세요?"],
+            ["b", "됐어. 가게 태워도 보험 들어 놨어. 아마도. 채용이야. 그래그래. 가서 피자나 만들어."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Oh. You're still here. And nobody complained? ...Cool. I'm going back to my nap."],
+            ["y", "Should I clean up?"],
+            ["b", "If you want. Or don't. Dust is just tiny floor snow."]
+          ],
+          ko: [
+            ["b", "어? 아직 있었네. 그런데 불만 접수도 없었어? ...좋네. 난 다시 낮잠 자러 갈게."],
+            ["y", "청소할까요?"],
+            ["b", "하고 싶으면 해. 아니면 말고. 먼지는 그냥 바닥에 내린 작은 눈이야."]
+          ]
+        }
+      },
+      { // Day 2
+        before: {
+          en: [
+            ["b", "Morning. Or afternoon? Doesn't matter. Pizza's the same either way."],
+            ["b", "I forgot to order cheese. And dough. But I did order four hundred pounds of basil, so, enjoy that."],
+            ["y", "You ordered... basil?"],
+            ["b", "Basil's a vegetable. Healthy. Whatever. Go."]
+          ],
+          ko: [
+            ["b", "아침인가? 아님 오후? 상관없어. 피자는 언제나 똑같으니까."],
+            ["b", "치즈랑 반죽 주문하는 걸 깜빡했어. 대신 바질은 사백 킬로 시켰으니까 알아서 즐겨."],
+            ["y", "바질을... 주문하셨다고요?"],
+            ["b", "바질은 채소야. 건강에 좋잖아. 뭐 어때. 가."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "You did stuff? That's nice. Can you do it again tomorrow? Cool."],
+            ["b", "I'd say 'good job' but I'd have to stand up."]
+          ],
+          ko: [
+            ["b", "뭘 했다고? 좋네. 내일도 또 해 줄 수 있어? 좋아."],
+            ["b", "'잘했다'고 말하고 싶은데, 그러려면 일어나야 돼서."]
+          ]
+        }
+      },
+      { // Day 3
+        before: {
+          en: [
+            ["b", "A guy called about a catering order. I said yes. Or no? I wrote it on a napkin. Where's the napkin?"],
+            ["y", "Is it... under your hat?"],
+            ["b", "Ha. It is. Great. Anyway, a lot of people are coming, I guess."]
+          ],
+          ko: [
+            ["b", "어떤 사람이 단체 주문 전화를 했어. 한다고 했나? 안 한다고 했나? 냅킨에 적어 놨는데. 냅킨 어딨지?"],
+            ["y", "그거... 모자 밑에 있는 거 아니에요?"],
+            ["b", "하하. 진짜 있네. 좋아. 아무튼 사람이 많이 올 거래, 아마도."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "The napkin said 'buy more napkins.' Ha. Anyway, everyone seems happy. Probably."],
+            ["b", "Hey, if the phone rings, just pretend I died."]
+          ],
+          ko: [
+            ["b", "냅킨엔 '냅킨 더 사기'라고 적혀 있었어. 하하. 아무튼 다들 만족한 것 같아. 아마도."],
+            ["b", "아, 전화 오면 나 죽었다고 해."]
+          ]
+        }
+      },
+      { // Day 4
+        before: {
+          en: [
+            ["b", "Health inspector's coming today. Or was that last week? Either way, try not to look suspicious."],
+            ["y", "How do I look not suspicious?"],
+            ["b", "Pretend to work. I do it every day. Works great."]
+          ],
+          ko: [
+            ["b", "오늘 위생 점검 나온대. 아니, 그게 지난주였나? 아무튼 수상해 보이지 마."],
+            ["y", "수상해 보이지 않으려면 어떻게 해야 해요?"],
+            ["b", "일하는 척해. 난 매일 해. 효과 만점이야."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "The inspector said the place was 'surprisingly okay.' High praise, honestly."],
+            ["b", "He asked who runs this kitchen. I pointed at you. Hope that's cool."]
+          ],
+          ko: [
+            ["b", "점검 나온 사람이 '의외로 괜찮다'고 하더라. 솔직히 최고의 칭찬이지."],
+            ["b", "이 주방은 누가 맡냐고 묻길래 널 가리켰어. 괜찮지?"]
+          ]
+        }
+      },
+      { // Day 5
+        before: {
+          en: [
+            ["b", "A fancy food critic is visiting. They said it's important. I'd care more if I wasn't hungry."],
+            ["y", "Do you want me to do anything special?"],
+            ["b", "Just make pizza. Normal pizza. That's all anyone ever wants."]
+          ],
+          ko: [
+            ["b", "고급 음식 평론가가 온대. 중요한 사람이라나. 배만 안 고팠어도 신경 썼을 텐데."],
+            ["y", "특별히 준비할 게 있나요?"],
+            ["b", "그냥 피자 만들어. 평범한 피자. 사람들은 그것만 원해."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "They gave us five stars. Or five pizzas? Whatever it was, it was five of something."],
+            ["b", "I'd give you a raise, but I forgot my wallet. Maybe next year. Or never. Anyway, good job. I think."],
+            ["y", "I'll take the 'good job'!"],
+            ["b", "Sure. Whatever. Now wake me up if something explodes."]
+          ],
+          ko: [
+            ["b", "별 다섯 개 받았어. 아니면 피자 다섯 판? 아무튼 다섯 개짜리였어."],
+            ["b", "월급 올려 주고 싶은데 지갑을 놓고 왔네. 내년에? 아니면 평생 안 주거나. 아무튼 잘했어. 아마도."],
+            ["y", "'잘했다'만 받을게요!"],
+            ["b", "그래, 뭐. 이제 뭐 터지면 깨워 줘."]
+          ]
+        }
+      }
+    ] },
+
+    // ---------------- FRIED CHICKEN: a boss who LOVES money ----------------
+    chicken: { look: "greedy", days: [
+      { // Day 1
+        before: {
+          en: [
+            ["b", "Welcome, welcome! Quick question before we begin. How do you feel about money?"],
+            ["y", "Um... it's fine, I guess?"],
+            ["b", "FINE?! It's wonderful! It's crisp! It smells like opportunity!"],
+            ["y", "Oh. Okay?"],
+            ["b", "The last applicant asked for a day off. A DAY OFF! A whole day with no money in it. I showed him the door."],
+            ["b", "You didn't ask for anything. I like that. I pay my team in exposure, plus one free biscuit a week."],
+            ["y", "But how will I pay my rent?"],
+            ["b", "Details! Every customer who walks in is a walking wallet. Keep them happy and they keep paying. You're hired! Go fry something!"]
+          ],
+          ko: [
+            ["b", "어서 와요, 어서 와! 시작하기 전에 질문 하나. 돈에 대해 어떻게 생각해요?"],
+            ["y", "음... 괜찮은 것 같아요?"],
+            ["b", "괜찮다고?! 환상적이지! 빳빳하잖아! 기회의 냄새가 난다고!"],
+            ["y", "아... 네?"],
+            ["b", "저번 지원자는 휴무를 달라고 했어. 휴무라니! 돈이 한 푼도 안 들어오는 하루를! 문 앞으로 쫓아냈지."],
+            ["b", "넌 아무것도 안 달라고 하네. 마음에 들어. 월급은 '경험'이랑 일주일에 비스킷 하나야."],
+            ["y", "그럼 월세는 어떻게 내요?"],
+            ["b", "그런 건 사소한 문제야! 손님은 다 걸어 다니는 지갑이라고. 기분 좋게 해 주면 계속 쓰고 가지. 채용이야! 가서 튀겨!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "I counted the register three times. Then four. The numbers keep being beautiful."],
+            ["b", "Great work! Here's your free biscuit. Don't eat it all in one bite, it's worth money."]
+          ],
+          ko: [
+            ["b", "금전 등록기를 세 번 셌어. 아니, 네 번. 숫자가 계속 아름다워."],
+            ["b", "수고했어! 자, 무료 비스킷이야. 한입에 다 먹지 마, 이것도 돈이야."]
+          ]
+        }
+      },
+      { // Day 2
+        before: {
+          en: [
+            ["b", "Good news! I raised all our prices. A drumstick now costs about as much as a small car."],
+            ["y", "Boss, won't the customers stop coming?"],
+            ["b", "Ha! They'll pay for the experience. Smile, fry, and add a smiling fee."]
+          ],
+          ko: [
+            ["b", "좋은 소식! 가격을 전부 올렸어. 닭다리 하나가 소형차 값이야."],
+            ["y", "사장님, 손님들이 안 오지 않을까요?"],
+            ["b", "하하! 경험에 돈을 내는 거지. 웃고, 튀기고, '웃음 요금'을 붙여."]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Somebody left a gold coin as a tip and I cried happy tears into the register. It's waterproof, don't worry."],
+            ["b", "You did great today. That's a compliment AND a business expense."]
+          ],
+          ko: [
+            ["b", "누가 금화를 팁으로 놓고 갔어. 기뻐서 금전 등록기에 눈물을 흘렸지. 방수니까 걱정 마."],
+            ["b", "오늘 잘했어. 이건 칭찬이자 업무상 경비야."]
+          ]
+        }
+      },
+      { // Day 3
+        before: {
+          en: [
+            ["b", "A tour group is coming today. Fifty people, fifty wallets. Fifty chances for a bigger fortune."],
+            ["y", "So I should cook fast?"],
+            ["b", "Cook fast, cook tasty, and make them order the large size. Always the large size!"]
+          ],
+          ko: [
+            ["b", "오늘은 단체 관광객이야. 오십 명, 지갑 오십 개. 재산을 불릴 기회가 오십 번이지."],
+            ["y", "그럼 빨리 만들면 되나요?"],
+            ["b", "빠르게, 맛있게, 그리고 큰 사이즈로 주문하게 만들어! 무조건 큰 사이즈!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "Do you know what a pile of cash sounds like? Like an angel sneezing. Beautiful."],
+            ["b", "Good job. I'd give you a raise, but I already spent it on a bigger safe."]
+          ],
+          ko: [
+            ["b", "돈다발 쌓이는 소리 들어 봤어? 천사가 재채기하는 소리 같아. 아름답지."],
+            ["b", "잘했어. 월급 올려 주고 싶은데 더 큰 금고 사느라 다 썼네."]
+          ]
+        }
+      },
+      { // Day 4
+        before: {
+          en: [
+            ["b", "The accountant says we're making a fortune. I hugged him. He's still recovering."],
+            ["y", "That's great news!"],
+            ["b", "It IS! But a fortune can always be bigger. Today we aim for a BIGGER fortune. Go cook!"]
+          ],
+          ko: [
+            ["b", "회계사가 우리가 큰돈을 벌고 있대. 안아 줬더니 아직도 쓰러져 있어."],
+            ["y", "좋은 소식이네요!"],
+            ["b", "그렇지! 근데 큰돈은 더 커질 수 있잖아. 오늘은 더 큰돈을 벌자! 가서 튀겨!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "I bought a solid gold chicken statue for the lobby. It cost more than the building. Worth it."],
+            ["b", "The accountant says I can't afford it. I said I can afford anything if I'm rich enough. He's confused."]
+          ],
+          ko: [
+            ["b", "로비에 순금 닭 동상을 샀어. 건물보다 비싸. 그래도 가치 있어."],
+            ["b", "회계사가 그럴 형편이 안 된대. 난 부자면 뭐든 살 수 있다고 했지. 걔는 어리둥절해."]
+          ]
+        }
+      },
+      { // Day 5
+        before: {
+          en: [
+            ["b", "Last day of the week! The Golden Spatula Award people are visiting. First prize is a million dollars."],
+            ["y", "A million?!"],
+            ["b", "A MILLION. I'd cry, but I don't waste tears on things that don't pay. Now cook like your life depends on it!"]
+          ],
+          ko: [
+            ["b", "이번 주 마지막 날! 황금 뒤집개 상 심사위원이 온대. 우승 상금이 백만 달러야."],
+            ["y", "백만 달러요?!"],
+            ["b", "백만 달러! 울고 싶지만 돈 안 되는 일에 눈물은 낭비하지 않아. 목숨 걸고 튀겨!"]
+          ]
+        },
+        after: {
+          en: [
+            ["b", "We won! The trophy, the check, look at all those zeros! They're like little golden doughnuts!"],
+            ["b", "I still love money more than anything. ...Almost anything. You are the best employee I have ever had."],
+            ["y", "Thanks, boss!"],
+            ["b", "Don't thank me, thank the cash! Here, a raise. A real one. Now back to frying!"]
+          ],
+          ko: [
+            ["b", "우리가 이겼어! 트로피에, 수표에, 저 동그라미 좀 봐! 작은 황금 도넛 같아!"],
+            ["b", "난 여전히 돈을 제일 사랑해. ...거의 제일. 넌 내가 만난 최고의 직원이야."],
+            ["y", "감사합니다, 사장님!"],
+            ["b", "나한테 고마워하지 말고 돈한테 고마워해! 자, 월급 올려 준다. 진짜로. 이제 다시 튀기자!"]
+          ]
+        }
+      }
+    ] }
+  };
+
+  // =====================================================================
+  //  GAME DATA
+  // =====================================================================
+  var FOOD = {
+    patty: "#7a3b1e", cheese: "#ffd23f", lettuce: "#5fbf4a", tomato: "#e04545",
+    egg: "#ffe66d", carrot: "#f08a24", spinach: "#3f9e4a", ham: "#e8908a",
+    sauce: "#e8453c", mozz: "#ffe9a8", pepperoni: "#9c2a1a", basil: "#4caf50",
+    chicken: "#c9772a", fries: "#ffd23f", slaw: "#b7e08e", biscuit: "#e8c48a"
+  };
+  var TABLES = [64, 160, 256];   // table center x positions
+  var SKIN = "#f5c9a0";
+  var SHIRTS = ["#4a90d9", "#d96aa7", "#8a5cd9", "#e0a030", "#3fb5a0"];
+  var HAIRS = ["#2b1b12", "#6b3f1d", "#c9a227", "#8a8a8a", "#b33a3a"];
+
+  // Pixel sprites (each letter is a palette color)
+  var PLAYER_BODY = [
+    "...wwww...",
+    "..wwwwww..",
+    "..wwwwww..",
+    "..ssssss..",
+    "..skssks..",
+    "..ssssss..",
+    "...ssss...",
+    ".wwwwwwww.",
+    "swwrrrrwws",
+    "swwrrrrwws",
+    ".wwrrrrww.",
+    "..wwwwww.."
+  ];
+  var LEGS = [
+    ["..bb..bb..", "..bb..bb.."],
+    ["...bb.bb..", "...bb.bb.."]
+  ];
+  var PLAYER_PAL = { w: "#ffffff", s: SKIN, k: "#222222", r: "#d94a3a", b: "#5a3b2e" };
+
+  var CUSTOMER = [
+    "..hhhhhh..",
+    ".hhhhhhhh.",
+    ".hssssssh.",
+    ".hskssksh.",
+    ".hssssssh.",
+    "..ssssss..",
+    "..cccccc..",
+    ".cccccccc.",
+    ".cccccccc.",
+    ".ssccccss.",
+    "..cccccc..",
+    "..kk..kk.."
+  ];
+
+  // Green-check interaction icon (# = white pixels)
+  var CHECK = [
+    "......#",
+    ".....##",
+    "#...##.",
+    "##.##..",
+    ".###...",
+    "..#...."
+  ];
+
+  // =====================================================================
+  //  RESTAURANT DESIGNS (each has its own food, walls, floor, tables, counters)
+  // =====================================================================
+
+  // ----- How each dish is drawn from the list of ingredients. cx = center x, by = bottom y -----
+  function dishBurger(list, cx, by) {
+    var B = "#d9a05b";
+    var y = by;
+    rect(B, cx - 6, y - 2, 12, 2); y -= 2;                       // bottom bun
+    list.forEach(function (k) { rect(FOOD[k], cx - 6, y - 2, 12, 2); y -= 2; });
+    rect(B, cx - 6, y - 2, 12, 2);                               // top bun
+    rect(B, cx - 5, y - 3, 10, 1);
+    rect(B, cx - 3, y - 4, 6, 1);
+    rect("#fff3c4", cx - 2, y - 3, 1, 1);                        // sesame seeds
+    rect("#fff3c4", cx + 1, y - 2, 1, 1);
+  }
+
+  function dishKimbap(list, cx, by) {
+    var h = 2 * list.length + 4;
+    rect("#1f2d22", cx - 6, by - h, 12, h);                      // seaweed wrapper
+    rect("#f4f1e6", cx - 5, by - 2, 10, 2);                      // bottom rice
+    var y = by - 2;
+    list.forEach(function (k) { rect(FOOD[k], cx - 5, y - 2, 10, 2); y -= 2; });
+    rect("#f4f1e6", cx - 5, y - 2, 10, 2);                       // top rice
+  }
+
+  function dishPizza(list, cx, by) {
+    rect("#d9a05b", cx - 7, by - 2, 14, 2);                      // crust
+    rect("#b9782f", cx - 7, by - 2, 1, 2);
+    rect("#b9782f", cx + 6, by - 2, 1, 2);
+    var y = by - 2;
+    list.forEach(function (k, i) {
+      var w = Math.max(4, 12 - i * 2);                           // layers get narrower, like a slice
+      rect(FOOD[k], cx - w / 2, y - 2, w, 2);
+      y -= 2;
+    });
+  }
+
+  function dishChicken(list, cx, by) {
+    rect("#c8102e", cx - 6, by - 4, 12, 4);                      // bucket
+    rect("#ffffff", cx - 4, by - 4, 2, 4);
+    rect("#ffffff", cx, by - 4, 2, 4);
+    rect("#ffffff", cx + 4, by - 4, 2, 4);
+    rect("#8c0a1f", cx - 7, by - 5, 14, 1);                      // rim
+    var y = by - 5;
+    list.forEach(function (k) { rect(FOOD[k], cx - 5, y - 2, 10, 2); y -= 2; });
+  }
+
+  // ----- Burger restaurant: the classic diner -----
+  function bgBurger() {
+    var i, j, y, x;
+    for (j = 0; j < 12; j++)
+      for (i = 0; i < 20; i++)
+        rect((i + j) % 2 ? "#d6c8a6" : "#e8dcc0", i * 16, 24 + j * 16, 16, 16);
+    rect("#8d5b4c", 0, 0, W, 24);
+    for (y = 6; y < 24; y += 6) rect("#6f4338", 0, y, W, 1);
+    for (y = 0; y < 24; y += 6)
+      for (x = (y / 6 % 2) * 8; x < W; x += 16) rect("#6f4338", x, y, 1, 6);
+    rect("#5a3b2e", 0, 24, W, 2);
+    [20, 70, 230, 280].forEach(function (wx) {
+      rect("#5a3b2e", wx - 1, 4, 22, 14);
+      rect("#9ad4f5", wx, 5, 20, 12);
+      rect("#5a3b2e", wx + 9, 5, 2, 12);
+    });
+    label(t("sign_burger"), 160, 15, "#ffd28a");
+  }
+
+  // ----- Kimbap restaurant: brown wood walls and floor, red lanterns -----
+  function lantern(lx) {
+    rect("#3d2b1f", lx, 0, 1, 4);
+    rect("#3d2b1f", lx - 3, 3, 7, 1);
+    rect("#d9382b", lx - 4, 4, 9, 10);
+    rect("#a82218", lx - 4, 6, 9, 1);
+    rect("#a82218", lx - 4, 11, 9, 1);
+    rect("#3d2b1f", lx - 3, 14, 7, 1);
+  }
+
+  function bgKimbap() {
+    var j, y, x;
+    for (j = 0; j < 15; j++) {                                   // wooden floor planks
+      y = 24 + j * 12;
+      rect(j % 2 ? "#a8743f" : "#b9824a", 0, y, W, 12);
+      rect("#8a5a30", 0, y + 11, W, 1);
+      for (x = (j % 2) * 30; x < W; x += 60) rect("#8a5a30", x, y, 1, 12);
+    }
+    rect("#8a5a34", 0, 0, W, 24);                                // wooden wall planks
+    for (x = 0; x < W; x += 12) {
+      rect((x / 12) % 2 ? "#7d4f2c" : "#935f38", x, 0, 12, 24);
+      rect("#6b4425", x, 0, 1, 24);
+    }
+    rect("#5a3820", 0, 24, W, 2);
+    [24, 112, 208, 296].forEach(lantern);
+    rect("#3d2410", 128, 4, 64, 16);
+    rect("#f5e6c8", 130, 6, 60, 12);
+    label(t("sign_kimbap"), 160, 15, "#5a2a10");
+  }
+
+  // ----- Pizzeria: fancy, with Italian posters -----
+  function posterFrame(x) { rect("#d4a937", x, 3, 22, 18); }
+
+  function posterFlag(x) {                                       // Italian flag
+    posterFrame(x);
+    rect("#2e9b4f", x + 2, 5, 6, 14);
+    rect("#f4f4f4", x + 8, 5, 6, 14);
+    rect("#d62839", x + 14, 5, 6, 14);
+  }
+
+  function posterPizza(x) {                                      // a pizza
+    posterFrame(x);
+    rect("#f4e6c8", x + 2, 5, 18, 14);
+    var cx = x + 11;
+    rect("#d9a05b", cx - 4, 8, 9, 9);
+    rect("#d9a05b", cx - 2, 7, 5, 11);
+    rect("#d9402f", cx - 3, 9, 7, 7);
+    rect("#ffe9a8", cx - 2, 10, 2, 2);
+    rect("#7a1a12", cx + 1, 10, 2, 2);
+    rect("#7a1a12", cx - 2, 13, 2, 2);
+    rect("#4caf50", cx + 1, 13, 2, 1);
+  }
+
+  function posterTower(x) {                                      // the leaning tower of Pisa
+    posterFrame(x);
+    rect("#9ad4f5", x + 2, 5, 18, 14);
+    rect("#6bbf59", x + 2, 17, 18, 2);
+    for (var k = 0; k < 6; k++) {
+      var tx = x + 8 + Math.floor(k * 0.7), ty = 16 - k * 2;
+      rect("#efe6cf", tx, ty, 5, 2);
+      if (k % 2 === 0) rect("#b8ac90", tx, ty, 5, 1);
+    }
+  }
+
+  function posterColosseum(x) {                                  // the Colosseum
+    posterFrame(x);
+    rect("#f0d9a8", x + 2, 5, 18, 14);
+    rect("#c9a56a", x + 3, 8, 16, 10);
+    for (var i = 0; i < 4; i++) {
+      rect("#6b4a2a", x + 5 + i * 4, 9, 2, 3);
+      rect("#6b4a2a", x + 5 + i * 4, 13, 2, 3);
+    }
+  }
+
+  function sconce(x) {
+    rect("#d4a937", x, 6, 6, 2);
+    rect("#ffe9a8", x + 1, 8, 4, 7);
+    rect("#fff6cc", x + 2, 9, 2, 4);
+  }
+
+  function bgPizza() {
+    var i, j, x;
+    for (j = 0; j < 12; j++)                                     // black and white marble floor
+      for (i = 0; i < 20; i++)
+        rect((i + j) % 2 ? "#3a3a44" : "#d9d4c9", i * 16, 24 + j * 16, 16, 16);
+    rect("#8e1b2a", 138, 26, 44, 178);                           // red carpet with gold edges
+    rect("#d4a937", 138, 26, 2, 178);
+    rect("#d4a937", 180, 26, 2, 178);
+    rect("#6e1423", 0, 0, W, 24);                                // burgundy wall with gold trim
+    for (x = 0; x < W; x += 12) rect("#7d1a2b", x + 5, 2, 2, 20);
+    rect("#d4a937", 0, 22, W, 2);
+    rect("#a8821f", 0, 24, W, 1);
+    posterFlag(8);
+    posterPizza(40);
+    posterTower(232);
+    posterColosseum(272);
+    sconce(94);
+    sconce(214);
+    rect("#d4a937", 126, 4, 68, 17);
+    rect("#3a0d16", 128, 6, 64, 13);
+    label(t("sign_pizza"), 160, 16, "#f3d98b");
+  }
+
+  // ----- Fried chicken restaurant: red and white, striped awning -----
+  function menuBoard(x) {
+    rect("#222222", x, 11, 40, 10);
+    rect("#ffd23f", x + 3, 13, 18, 1);
+    rect("#ffffff", x + 3, 15, 26, 1);
+    rect("#e04545", x + 3, 17, 14, 1);
+    rect("#ffffff", x + 3, 19, 22, 1);
+  }
+
+  function bucketPicture(x) {
+    rect("#ffffff", x - 2, 11, 17, 12);
+    rect("#c9772a", x + 1, 12, 4, 3);
+    rect("#d98a2b", x + 5, 11, 5, 4);
+    rect("#c8102e", x, 15, 13, 7);
+    rect("#ffffff", x + 2, 15, 2, 7);
+    rect("#ffffff", x + 6, 15, 2, 7);
+    rect("#ffffff", x + 10, 15, 2, 7);
+  }
+
+  function bgChicken() {
+    var i, j, x, c;
+    for (j = 0; j < 12; j++)                                     // light tile floor
+      for (i = 0; i < 20; i++)
+        rect((i + j) % 2 ? "#d9d4c8" : "#ece7dc", i * 16, 24 + j * 16, 16, 16);
+    rect("#f4efe6", 0, 0, W, 24);                                // white wall with a red band
+    rect("#c8102e", 0, 17, W, 7);
+    rect("#8c0a1f", 0, 24, W, 2);
+    for (x = 0; x < W; x += 8) {                                 // red and white striped awning
+      c = (x / 8) % 2 ? "#ffffff" : "#c8102e";
+      rect(c, x, 0, 8, 8);
+      rect(c, x + 1, 8, 6, 1);
+      rect(c, x + 2, 9, 4, 1);
+    }
+    rect("rgba(0,0,0,0.15)", 0, 10, W, 1);
+    menuBoard(14);
+    menuBoard(64);
+    bucketPicture(228);
+    menuBoard(262);
+    rect("#ffffff", 123, 10, 74, 13);
+    rect("#c8102e", 125, 12, 70, 9);
+    label(t("sign_chicken"), 160, 20, "#ffffff");
+  }
+
+  // ----- Everything that makes each restaurant different -----
+  var RESTAURANTS = {
+    burger: {
+      foods: ["patty", "cheese", "lettuce", "tomato"], mustHave: "patty",
+      apron: "#d94a3a", dish: dishBurger, bg: bgBurger, candle: false,
+      table:   { top: "#c98a54", front: "#8a5a34", line: "#e8e0d0" },
+      counter: { top: "#c98a54", front: "#8a5a34", line: "#6b4425", edge: "#5a3b2e", text: "#fff3e0" },
+      office:  { wall: "#6e8b9b", wain: "#59747f", fa: "#8a6a4b", fb: "#7e6044" }
+    },
+    kimbap: {
+      foods: ["egg", "carrot", "spinach", "ham"], mustHave: null,
+      apron: "#3a7d5c", dish: dishKimbap, bg: bgKimbap, candle: false,
+      table:   { top: "#e2b377", front: "#a8743f", line: "#f5e6c8" },
+      counter: { top: "#e0b07a", front: "#b07a45", line: "#8a5a30", edge: "#6b4425", text: "#fff3e0" },
+      office:  { wall: "#8a5a34", wain: "#6b4425", fa: "#b9824a", fb: "#a8743f" }
+    },
+    pizza: {
+      foods: ["sauce", "mozz", "pepperoni", "basil"], mustHave: null,
+      apron: "#2a6f3a", dish: dishPizza, bg: bgPizza, candle: true,
+      table:   { top: "#f6f1e7", front: "#8e1b2a", line: "#d4a937" },
+      counter: { top: "#3a3a44", front: "#1f1f26", line: "#d4a937", edge: "#d4a937", text: "#f3d98b" },
+      office:  { wall: "#6e1423", wain: "#4a0d18", fa: "#d9d4c9", fb: "#c9c3b8" }
+    },
+    chicken: {
+      foods: ["chicken", "fries", "slaw", "biscuit"], mustHave: null,
+      apron: "#c8102e", dish: dishChicken, bg: bgChicken, candle: false,
+      table:   { top: "#f7f7f7", front: "#c8102e", line: "#e0e0e0" },
+      counter: { top: "#f7f7f7", front: "#c8102e", line: "#8c0a1f", edge: "#8c0a1f", text: "#ffffff" },
+      office:  { wall: "#b3122a", wain: "#8c0a1f", fa: "#d9d4c8", fb: "#c9c3b6" }
+    }
+  };
+
+  // =====================================================================
+  //  STATE (all declared up here, before anything uses it)
+  // =====================================================================
+  function $(id) { return document.getElementById(id); }
+  var cv = $("c");
+  var ctx = cv.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+
+  var keys = {};
+  var mode = "menu";            // "menu", "scene" (cutscene) or "play"
+  var runType = "endless";      // "endless" or "story"
+  var storyId = "burger";       // which story is being played
+  var dayNo = 1;                // which day of the story (1 to 5)
+  var curRid = "burger";        // id of the restaurant being played
+  var R = RESTAURANTS.burger;   // the restaurant being played
+  var STATIONS = [];
+  var paused = false;
+  var p = null, tray = [], customers = [null, null, null];
+  var score = 0, lives = 0, served = 0, newBest = false;
+  var cfg = DIFFICULTY.normal;
+  var last = 0, spawnT = 0, floaters = [];
+  var scene = null;
+  var audio = null;
+  var rebuild = null;           // redraws the current menu screen (used when the language changes)
+  var lastFitW = 0, lastFitTime = 0, toastTimer = null;
+
+  // Admin menu (only for this session, never saved)
+  var adminUnlocked = false;    // becomes true after typing a-d-m-i-n on the main menu
+  var adminBuf = "";            // the last few letters typed on the main menu
+  var adminSpeed = SPEED;       // walking speed used while the admin menu is unlocked
+  var adminSel = { story: "burger", day: 1 };
+  var testRun = false;          // true when a day was started from the admin menu
+
+  function setRestaurant(id) {
+    curRid = id;
+    R = RESTAURANTS[id];
+    STATIONS = [];
+    for (var i = 0; i < R.foods.length; i++) STATIONS.push({ kind: R.foods[i], x: 12 + i * 60, num: i + 1 });
+    STATIONS.push({ kind: "trash", x: 252, num: 0 });
+    PLAYER_PAL.r = R.apron;
+  }
+  setRestaurant("burger");
+
+  function goal() { return DAY_GOALS[dayNo - 1]; }
+
+  // =====================================================================
+  //  SETTINGS AND SAVES (saved automatically in this browser)
+  // =====================================================================
+  var STORAGE_KEY = "pixelDinerSettings";
+  var S = {
+    lang: "ko",                                                 // Korean is the default language
+    difficulty: "normal", sound: true, prompt: true,
+    progress: { burger: 0, kimbap: 0, pizza: 0, chicken: 0 },   // days finished in each story
+    best: { burger: 0, kimbap: 0, pizza: 0, chicken: 0 }        // best endless score per restaurant
+  };
+
+  function loadFrom(o) {
+    if (!o || typeof o !== "object") return;
+    if (o.lang === "ko" || o.lang === "en") S.lang = o.lang;
+    if (DIFFICULTY[o.difficulty]) S.difficulty = o.difficulty;
+    if (typeof o.sound === "boolean") S.sound = o.sound;
+    if (typeof o.prompt === "boolean") S.prompt = o.prompt;
+    ["progress", "best"].forEach(function (group) {
+      if (!o[group]) return;
+      var max = group === "progress" ? 5 : 9999;
+      Object.keys(S[group]).forEach(function (k) {
+        var v = o[group][k];
+        if (typeof v === "number" && v >= 0 && v <= max) S[group][k] = Math.floor(v);
+      });
+    });
+  }
+  try { loadFrom(JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}")); } catch (e) {}
+
+  function toast(msg) {
+    var el = $("toast");
+    el.textContent = msg;
+    el.style.opacity = "1";
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.style.opacity = "0"; }, 1500);
+  }
+
+  function saveSettings() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(S));
+      toast(t("saved"));
+    } catch (e) {
+      toast(t("saveFail"));
+    }
+  }
+
+  // Save codes: copy one to back up your save, paste one to restore it
+  function exportSave() {
+    prompt(t("exportMsg"), btoa(JSON.stringify(S)));
+  }
+
+  function importSave() {
+    var code = prompt(t("importMsg"));
+    if (!code) return;
+    try {
+      loadFrom(JSON.parse(atob(code.trim())));
+      saveSettings();
+      applyLanguage();
+      toast(t("loaded"));
+    } catch (e) {
+      alert(t("badCode"));
+    }
+  }
+
+  function resetProgress() {
+    if (confirm(t("confirmReset"))) {
+      S.progress = { burger: 0, kimbap: 0, pizza: 0, chicken: 0 };
+      saveSettings();
+      if (mode === "menu" && rebuild) rebuild();
+    }
+  }
+
+  function refreshSettingsUI() {
+    var btns = document.querySelectorAll("[data-d]");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle("active", btns[i].getAttribute("data-d") === S.difficulty);
+      btns[i].disabled = (mode === "play");          // locked during a shift
+    }
+    var langs = document.querySelectorAll("[data-l]");
+    for (var j = 0; j < langs.length; j++) {
+      langs[j].classList.toggle("active", langs[j].getAttribute("data-l") === S.lang);
+    }
+    var d = DIFFICULTY[S.difficulty];
+    $("diffInfo").textContent = t("diffInfo", t(S.difficulty), d.lives, d.patience, d.spawn);
+    $("sound").checked = S.sound;
+    $("prompt").checked = S.prompt;
+  }
+
+  // Fills in every piece of text on the page in the current language
+  function applyLanguage() {
+    document.documentElement.lang = S.lang;
+    document.title = t("title");
+    var els = document.querySelectorAll("[data-i18n]");
+    for (var i = 0; i < els.length; i++) els[i].textContent = t(els[i].getAttribute("data-i18n"));
+    refreshSettingsUI();
+    if (adminOpen()) buildAdmin();
+    if (mode === "menu" && rebuild) rebuild();
+    lastFitW = 0;                                    // text sizes changed, so re-fit the screen
+  }
+
+  function setLanguage(l) {
+    S.lang = l;
+    saveSettings();
+    applyLanguage();
+  }
+
+  function setDifficulty(name) {
+    if (mode === "play") return;
+    S.difficulty = name;
+    refreshSettingsUI();
+    saveSettings();
+  }
+  function setSound(v) { S.sound = v; saveSettings(); }
+  function setPrompt(v) { S.prompt = v; saveSettings(); }
+
+  function settingsOpen() {
+    return !$("settings").classList.contains("hidden");
+  }
+
+  function openSettings() {
+    paused = true;
+    Object.keys(keys).forEach(function (k) { keys[k] = false; });
+    refreshSettingsUI();
+    $("settings").classList.remove("hidden");
+  }
+
+  function closeSettings() {
+    paused = false;
+    $("settings").classList.add("hidden");
+  }
+
+  function gearClick() {
+    $("gear").blur();
+    if (mode !== "scene") openSettings();
+  }
+
+  // =====================================================================
+  //  ADMIN MENU: test any story day and its dialogue, and set your walking speed
+  //  Open it by typing a, d, m, i, n while the main menu is showing.
+  // =====================================================================
+  function adminOpen() {
+    return !$("admin").classList.contains("hidden");
+  }
+
+  function buildAdmin() {
+    var sb = $("adminStories");
+    sb.innerHTML = "";
+    STORY_ORDER.forEach(function (id) {
+      var b = document.createElement("button");
+      b.className = "small" + (adminSel.story === id ? " active" : "");
+      b.textContent = t("story_" + id);
+      b.onclick = function () { b.blur(); adminSel.story = id; buildAdmin(); };
+      sb.appendChild(b);
+    });
+    var db = $("adminDays");
+    db.innerHTML = "";
+    for (var d = 1; d <= 5; d++) {
+      (function (n) {
+        var b = document.createElement("button");
+        b.className = "small" + (adminSel.day === n ? " active" : "");
+        b.textContent = t("dayTag", n);
+        b.onclick = function () { b.blur(); adminSel.day = n; buildAdmin(); };
+        db.appendChild(b);
+      })(d);
+    }
+    $("adminSpeed").value = adminSpeed;
+    $("adminSpeedVal").textContent = adminSpeed;
+  }
+
+  function openAdmin() {
+    mode = "menu";
+    $("overlay").style.display = "none";
+    $("admin").classList.remove("hidden");
+    buildAdmin();
+  }
+
+  function closeAdmin() {
+    $("admin").classList.add("hidden");
+    showMenu();
+  }
+
+  // kind is "before" (opening scene), "after" (ending scene) or "day" (play the shift)
+  function adminPlay(kind) {
+    var id = adminSel.story, day = adminSel.day, d = STORIES[id].days[day - 1];
+    $("admin").classList.add("hidden");
+    runType = "story";
+    storyId = id;
+    dayNo = day;
+    setRestaurant(id);
+    testRun = true;
+    if (kind === "before") playScene(L(d.before[S.lang]), openAdmin);
+    else if (kind === "after") playScene(L(d.after[S.lang]), openAdmin);
+    else startShift();
+  }
+
+  function setAdminSpeed(v) {
+    adminSpeed = +v;
+    $("adminSpeedVal").textContent = adminSpeed;
+  }
+
+  function adminResetSpeed() {
+    adminSpeed = SPEED;
+    buildAdmin();
+  }
+
+  // =====================================================================
+  //  SCREEN FIT: sizes the whole game so it fits the window with no scrolling
+  // =====================================================================
+  function fitScreen() {
+    var availH = window.innerHeight - $("hud").offsetHeight - $("help").offsetHeight - 22;
+    var availW = window.innerWidth - 16;
+    var w = Math.floor(Math.max(240, Math.min(availW, availH * 4 / 3, 1280)));
+    if (w === lastFitW) return;
+    lastFitW = w;
+    $("stage").style.width = w + "px";
+    $("hud").style.width = w + "px";
+    $("help").style.width = w + "px";
+    fitDialog();
+  }
+
+  // =====================================================================
+  //  SOUND (tiny beeps, no files needed)
+  // =====================================================================
+  function beep(freq, dur, type, vol) {
+    if (!S.sound) return;
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      var o = audio.createOscillator(), g = audio.createGain();
+      o.type = type || "square";
+      o.frequency.value = freq;
+      g.gain.value = vol || 0.04;
+      o.connect(g); g.connect(audio.destination);
+      g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + dur);
+      o.start(); o.stop(audio.currentTime + dur);
+    } catch (e) {}
+  }
+  var sfx = {
+    add:   function () { beep(520, 0.07); },
+    trash: function () { beep(200, 0.12, "triangle"); },
+    good:  function () { beep(660, 0.1); setTimeout(function () { beep(880, 0.15); }, 90); },
+    wrong: function () { beep(140, 0.18, "sawtooth"); },
+    angry: function () { beep(90, 0.3, "sawtooth", 0.06); }
+  };
+
+  // =====================================================================
+  //  HELPERS
+  // =====================================================================
+  function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  function rect(color, x, y, w, h) {
+    ctx.fillStyle = color;
+    ctx.fillRect(Math.round(x), Math.round(y), w, h);
+  }
+
+  function sprite(rows, pal, x, y, flip) {
+    var w = rows[0].length;
+    for (var j = 0; j < rows.length; j++) {
+      for (var i = 0; i < w; i++) {
+        var ch = rows[j].charAt(flip ? w - 1 - i : i);
+        if (ch !== ".") rect(pal[ch], x + i, y + j, 1, 1);
+      }
+    }
+  }
+
+  // Same as sprite() but each pixel is s x s (used for the big cutscene portrait)
+  function spriteScaled(rows, pal, x, y, s) {
+    for (var j = 0; j < rows.length; j++) {
+      for (var i = 0; i < rows[j].length; i++) {
+        var ch = rows[j].charAt(i);
+        if (ch !== ".") rect(pal[ch], x + i * s, y + j * s, s, s);
+      }
+    }
+  }
+
+  // Text inside the game screen (Korean uses a slightly bigger font so it stays readable)
+  function label(str, x, y, color) {
+    ctx.font = S.lang === "ko"
+      ? 'bold 10px "Malgun Gothic","Apple SD Gothic Neo","Noto Sans KR",sans-serif'
+      : "bold 8px monospace";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#000";
+    ctx.fillText(str, Math.round(x) + 1, Math.round(y) + 1);
+    ctx.fillStyle = color;
+    ctx.fillText(str, Math.round(x), Math.round(y));
+  }
+
+  function addFloater(x, y, str, color) {
+    floaters.push({ x: x, y: y, str: str, color: color, life: 1000 });
+  }
+
+  // =====================================================================
+  //  MENUS
+  // =====================================================================
+  function showOverlay(title, sub, items, hideSettings) {
+    $("title").textContent = title;
+    $("sub").textContent = sub;
+    var box = $("menuButtons");
+    box.innerHTML = "";
+    var all = hideSettings ? items : items.concat([{ label: t("settings"), fn: openSettings }]);
+    all.forEach(function (it) {
+      var b = document.createElement("button");
+      b.textContent = it.label;
+      b.onclick = function () { b.blur(); it.fn(); };
+      box.appendChild(b);
+    });
+    $("overlay").style.display = "flex";
+  }
+
+  function showMenu() {
+    mode = "menu";
+    testRun = false;
+    rebuild = showMenu;
+    var items = [
+      { label: t("storyMode"), fn: showStorySelect },
+      { label: t("endlessMode"), fn: showEndlessSelect }
+    ];
+    if (adminUnlocked) items.push({ label: t("adminBtn"), fn: openAdmin });   // shown once unlocked
+    showOverlay(t("title"), t("mainSub"), items);
+  }
+
+  function showStorySelect() {
+    mode = "menu";
+    rebuild = showStorySelect;
+    var items = [];
+    STORY_ORDER.forEach(function (id) {
+      var done = S.progress[id];
+      var tag = done >= 5 ? " (" + t("complete") + ")" : done > 0 ? " (" + t("dayTag", done + 1) + ")" : "";
+      items.push({
+        label: t("story_" + id) + tag,
+        fn: function () { startStory(id, done >= 5 ? 1 : done + 1); }
+      });
+    });
+    items.push({ label: t("back"), fn: showMenu });
+    showOverlay(t("chooseStory"), t("storySub"), items, true);
+  }
+
+  function showEndlessSelect() {
+    mode = "menu";
+    rebuild = showEndlessSelect;
+    var items = [];
+    STORY_ORDER.forEach(function (id) {
+      var b = S.best[id];
+      items.push({
+        label: t("r_" + id) + (b > 0 ? " (" + t("bestShort", b) + ")" : ""),
+        fn: function () { startEndless(id); }
+      });
+    });
+    items.push({ label: t("back"), fn: showMenu });
+    showOverlay(t("endlessMode"), t("endlessSub"), items, true);
+  }
+
+  // =====================================================================
+  //  GAME LOGIC
+  // =====================================================================
+  function reset() {
+    cfg = DIFFICULTY[S.difficulty];    // locked in for the whole shift
+    p = { x: 150, y: 120, dir: 1, step: 0, moving: false };
+    tray = [];
+    customers = [null, null, null];
+    score = 0; lives = cfg.lives; served = 0;
+    floaters = []; spawnT = 99999;     // first customer arrives right away
+  }
+
+  function startShift() {
+    reset();
+    mode = "play";
+    paused = false;
+    $("overlay").style.display = "none";
+    if (runType === "story") addFloater(160, 120, t("dayStart", dayNo, goal()), "#ffffff");
+  }
+
+  function startEndless(id) {
+    runType = "endless";
+    testRun = false;
+    setRestaurant(id);
+    startShift();
+  }
+
+  function startStory(id, day) {
+    runType = "story";
+    testRun = false;
+    storyId = id;
+    dayNo = day;
+    setRestaurant(id);
+    playScene(L(STORIES[id].days[day - 1].before[S.lang]), startShift);
+  }
+
+  // Saves your best endless score. Returns true if it is a new record
+  function recordBest() {
+    if (runType === "endless" && served > S.best[curRid]) {
+      S.best[curRid] = served;
+      saveSettings();
+      return true;
+    }
+    return false;
+  }
+
+  // Quit: you lose all your lives and go back to the main menu
+  function quitShift() {
+    if (mode !== "play") return;
+    recordBest();
+    lives = 0;
+    customers = [null, null, null];
+    tray = [];
+    floaters = [];
+    showMenu();
+  }
+
+  function spawnCustomer() {
+    var free = [];
+    customers.forEach(function (c, i) { if (!c) free.push(i); });
+    if (!free.length) return;
+    var len = 2 + Math.floor(Math.random() * 3);              // 2 to 4 ingredients
+    var order = [];
+    for (var n = 0; n < len; n++) order.push(pick(R.foods));
+    // Burger restaurant: every burger gets at least one patty
+    if (R.mustHave && order.indexOf(R.mustHave) < 0) {
+      order[Math.floor(Math.random() * order.length)] = R.mustHave;
+    }
+    // Patience shrinks as you serve more, but never below 60% of the starting value
+    var total = Math.max(cfg.patience * 600, cfg.patience * 1000 - served * 1000);
+    customers[pick(free)] = {
+      order: order, patience: 1, drain: 1 / total,
+      hair: pick(HAIRS), shirt: pick(SHIRTS), t: Math.random() * 6
+    };
+  }
+
+  // Finds the closest station or occupied table within reach
+  function nearest() {
+    var cx = p.x + 5, cy = p.y + 7;
+    var best = null, bd = 36;
+    STATIONS.forEach(function (s) {
+      var d = Math.hypot(cx - (s.x + 24), cy - 222);
+      if (d < bd) { bd = d; best = { s: s }; }
+    });
+    customers.forEach(function (c, i) {
+      if (!c) return;
+      var d = Math.hypot(cx - TABLES[i], cy - 69);
+      if (d < bd) { bd = d; best = { c: c, i: i }; }
+    });
+    return best;
+  }
+
+  function interact() {
+    var tg = nearest();
+    if (!tg) return;
+    if (tg.s) {
+      if (tg.s.kind === "trash") { tray = []; sfx.trash(); }
+      else if (tray.length < 4) { tray.push(tg.s.kind); sfx.add(); }
+      else addFloater(p.x + 5, p.y - 4, t("trayFull"), "#ffffff");
+    } else {
+      var tx = TABLES[tg.i];
+      if (!tray.length) {
+        addFloater(tx, 50, t("bringFood"), "#ffffff");
+      } else if (tray.join() === tg.c.order.join()) {
+        var pts = 10 + Math.round(tg.c.patience * 10);   // faster service = more points
+        score += pts; served++;
+        customers[tg.i] = null; tray = [];
+        addFloater(tx, 50, "+" + pts, "#7ddc7d");
+        sfx.good();
+        if (runType === "story" && served >= goal()) winShift();
+      } else {
+        addFloater(tx, 50, t("wrongOrder"), "#ffd24d");
+        sfx.wrong();
+      }
+    }
+  }
+
+  function update(dt) {
+    var speed = adminUnlocked ? adminSpeed : SPEED;   // the admin menu can change your walking speed
+    var dx = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+    var dy = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+    p.moving = (dx !== 0 || dy !== 0);
+    if (p.moving) {
+      var len = Math.hypot(dx, dy);
+      p.x += (dx / len) * speed * dt / 1000;
+      p.y += (dy / len) * speed * dt / 1000;
+      if (dx) p.dir = dx;
+      p.step += dt / 1000 * 8;
+    }
+    p.x = clamp(p.x, 2, W - 12);
+    p.y = clamp(p.y, 84, 190);
+
+    spawnT += dt;
+    var every = Math.max(cfg.spawn * 550, cfg.spawn * 1000 - served * 150);
+    if (spawnT >= every) { spawnT = 0; spawnCustomer(); }
+
+    customers.forEach(function (c, i) {
+      if (!c || mode !== "play") return;
+      c.patience -= c.drain * dt;
+      c.t += dt / 1000;
+      if (c.patience <= 0) {
+        customers[i] = null;
+        lives--;
+        addFloater(TABLES[i], 50, t("angry"), "#ff6b5e");
+        sfx.angry();
+        if (lives <= 0) gameOver();
+      }
+    });
+    floaters = floaters.filter(function (f) { f.life -= dt; return f.life > 0; });
+  }
+
+  function gameOver() {
+    mode = "menu";
+    newBest = recordBest();
+    showGameOver();
+  }
+
+  function showGameOver() {
+    mode = "menu";
+    rebuild = showGameOver;
+    var msg;
+    if (runType === "story") msg = t("failStory", served, goal());
+    else msg = t("result", served, score) + " " + (newBest ? t("newBest") : t("best", S.best[curRid]));
+    var items = [{ label: runType === "story" ? t("tryAgain") : t("playAgain"), fn: startShift }];
+    if (testRun) items.push({ label: t("adminBtn"), fn: openAdmin });
+    items.push({ label: t("mainMenu"), fn: showMenu });
+    showOverlay(t("shiftOver"), msg, items);
+  }
+
+  // A story day is finished: save progress, play the "after" scene, then show the results
+  function winShift() {
+    var id = storyId, thisDay = dayNo;
+    var lines = L(STORIES[id].days[thisDay - 1].after[S.lang]);
+    if (testRun) {                                   // admin test: don't touch saved progress
+      playScene(lines, openAdmin);
+      return;
+    }
+    if (thisDay > S.progress[id]) { S.progress[id] = thisDay; saveSettings(); }
+    playScene(lines, function () { showDayResult(id, thisDay); });
+  }
+
+  function showDayResult(id, thisDay) {
+    mode = "menu";
+    rebuild = function () { showDayResult(id, thisDay); };
+    var result = t("result", served, score);
+    var items = [];
+    if (thisDay < 5) {
+      items.push({ label: t("nextDay"), fn: function () { startStory(id, thisDay + 1); } });
+      items.push({ label: t("replayDay"), fn: startShift });
+      items.push({ label: t("mainMenu"), fn: showMenu });
+      showOverlay(t("dayDone", thisDay), result, items);
+    } else {
+      items.push({ label: t("replayStory"), fn: function () { startStory(id, 1); } });
+      items.push({ label: t("mainMenu"), fn: showMenu });
+      showOverlay(t("storyDone"), t("storyDoneSub", t("story_" + id), result), items);
+    }
+  }
+
+  // =====================================================================
+  //  CUTSCENES
+  // =====================================================================
+  function fitDialog() {
+    $("dialog").style.fontSize = ($("stage").clientWidth * 0.03) + "px";
+  }
+
+  function playScene(lines, onEnd) {
+    scene = { lines: lines, i: 0, shown: 0, onEnd: onEnd, look: STORIES[storyId].look, boss: t("boss_" + storyId) };
+    mode = "scene";
+    paused = false;
+    $("overlay").style.display = "none";
+    $("dialog").classList.remove("hidden");
+    $("skipBtn").classList.remove("hidden");
+    fitDialog();
+    showLine();
+  }
+
+  function showLine() {
+    var l = scene.lines[scene.i];
+    var np = $("nameplate");
+    np.textContent = l.who === "boss" ? scene.boss : t("you");
+    np.style.left = l.who === "boss" ? "auto" : "1em";     // nameplate sits on the speaker's side
+    np.style.right = l.who === "boss" ? "1em" : "auto";
+    scene.shown = 0;
+    $("dtext").textContent = "";
+    $("dnext").style.visibility = "hidden";
+  }
+
+  function updateScene(dt) {
+    if (!scene) return;
+    var l = scene.lines[scene.i];
+    if (scene.shown < l.text.length) scene.shown = Math.min(l.text.length, scene.shown + dt * 0.045);
+    $("dtext").textContent = l.text.slice(0, Math.floor(scene.shown));
+    $("dnext").style.visibility = scene.shown >= l.text.length ? "visible" : "hidden";
+  }
+
+  function advanceScene() {
+    if (!scene) return;
+    var l = scene.lines[scene.i];
+    if (scene.shown < l.text.length) { scene.shown = l.text.length; return; }   // finish typing first
+    scene.i++;
+    if (scene.i >= scene.lines.length) endScene();
+    else showLine();
+  }
+
+  function endScene() {
+    var done = scene && scene.onEnd;
+    scene = null;
+    $("dialog").classList.add("hidden");
+    $("skipBtn").classList.add("hidden");
+    mode = "menu";
+    if (done) done();
+  }
+
+  function skipScene() {
+    $("skipBtn").blur();
+    endScene();
+  }
+
+  $("stage").addEventListener("pointerdown", function (e) {
+    if (mode === "scene" && e.target.id !== "skipBtn") advanceScene();
+  });
+  window.addEventListener("resize", fitScreen);
+
+  // =====================================================================
+  //  DRAWING: office cutscene
+  // =====================================================================
+  function drawOffice() {
+    var O = R.office;
+    rect(O.wall, 0, 0, W, 112);                    // wall
+    rect(O.wain, 0, 96, W, 16);                    // lower wall panel
+    rect("rgba(0,0,0,0.2)", 0, 96, W, 2);
+    for (var y = 112; y < H; y += 12)              // floor
+      rect(y % 24 === 0 ? O.fa : O.fb, 0, y, W, 12);
+    // Window
+    rect("#3d2b1f", 118, 14, 84, 64);
+    rect("#9ad4f5", 121, 17, 78, 58);
+    rect("#3d2b1f", 158, 17, 4, 58);
+    rect("#3d2b1f", 121, 44, 78, 4);
+    rect("#ffffff", 126, 24, 14, 4); rect("#ffffff", 130, 22, 8, 2);
+    rect("#ffffff", 172, 52, 16, 4);
+    // Framed certificate
+    rect("#3d2b1f", 24, 16, 40, 28);
+    rect("#fff3e0", 26, 18, 36, 24);
+    rect("#bbbbbb", 30, 24, 28, 2);
+    rect("#bbbbbb", 30, 30, 28, 2);
+    rect("#c0392b", 48, 35, 8, 4);
+  }
+
+  function drawDesk() {
+    rect("#7b5236", 196, 108, 124, 8);
+    rect("#4a2f1f", 196, 116, 124, 40);
+    rect("#ffd28a", 226, 110, 22, 4);              // gold nameplate
+    rect("#f5f5f5", 274, 105, 16, 3);              // stack of papers
+    rect("#d9d9d9", 276, 102, 16, 3);
+  }
+
+  // The bosses, drawn from colored blocks. s = size of one block in pixels
+  function drawBoss(look, x, y, s, talking) {
+    function B(c, ux, uy, uw, uh) { rect(c, x + ux * s, y + uy * s, uw * s, uh * s); }
+    if (look === "humble") {                       // Mr. Kim: kind and smiling
+      B("#e8e0cf", 2, 10, 12, 14);                 // cream shirt
+      B("#c9a36a", 4, 11, 8, 13);                  // apron
+      B("#c9a36a", 6, 10, 4, 1);
+      B(SKIN, 6, 9, 4, 1);                         // neck
+      B(SKIN, 4, 1, 8, 8);                         // face
+      B(SKIN, 3, 4, 1, 2); B(SKIN, 12, 4, 1, 2);   // ears
+      B("#e8e8e8", 3, 2, 1, 4); B("#e8e8e8", 12, 2, 1, 4);     // white hair
+      B("#ffffff", 4, 0, 8, 2);                    // cook's cap
+      B("#6b5a4a", 5, 3, 2, 1); B("#6b5a4a", 9, 3, 2, 1);      // soft eyebrows
+      B("#222222", 6, 5, 1, 1); B("#222222", 9, 5, 1, 1);      // eyes
+      B("#f0a99a", 5, 6, 1, 1); B("#f0a99a", 10, 6, 1, 1);     // rosy cheeks
+      B("#e0a98a", 7, 6, 2, 1);                    // nose
+      B("#5a1f1f", 6, 7, 1, 1); B("#5a1f1f", 9, 7, 1, 1);      // smile corners
+      B("#5a1f1f", 7, 8, 2, talking ? 2 : 1);      // mouth
+    } else if (look === "lazy") {                  // Vinny: sleepy and unbothered
+      B("#ececec", 2, 10, 12, 14);                 // chef coat
+      B("#c0392b", 5, 13, 2, 2);                   // sauce stain
+      B("#bbbbbb", 8, 12, 1, 1); B("#bbbbbb", 8, 15, 1, 1);    // buttons
+      B(SKIN, 6, 9, 4, 1);
+      B(SKIN, 4, 1, 8, 8);
+      B(SKIN, 3, 4, 1, 2); B(SKIN, 12, 4, 1, 2);
+      B("#2a1b12", 3, 3, 1, 3); B("#2a1b12", 12, 3, 1, 3);     // messy hair
+      B("#2a1b12", 5, 1, 6, 1);
+      B("#ffffff", 5, 0, 8, 2); B("#ffffff", 3, 1, 3, 1);      // droopy chef hat
+      B("#2a1b12", 5, 3, 2, 1); B("#2a1b12", 9, 3, 2, 1);      // flat eyebrows
+      B("#d9a07a", 5, 4, 2, 1); B("#d9a07a", 9, 4, 2, 1);      // heavy eyelids
+      B("#222222", 5, 5, 2, 1); B("#222222", 9, 5, 2, 1);      // half-closed eyes
+      B("#e0a98a", 7, 6, 2, 1);
+      B("#2a1b12", 5, 7, 6, 1);                    // mustache
+      B("#5a1f1f", 7, 8, 2, talking ? 2 : 1);
+    } else if (look === "greedy") {                // Earl: loves money
+      B("#2e7d32", 2, 10, 12, 14);                 // green suit
+      B("#f4f4f4", 6, 10, 4, 5);                   // white shirt
+      B("#c0392b", 6, 10, 4, 1);                   // bow tie
+      B("#ffd23f", 5, 13, 6, 1);                   // gold chain
+      B("#ffd23f", 4, 16, 1, 1); B("#ffd23f", 11, 16, 1, 1);   // gold buttons
+      B(SKIN, 6, 9, 4, 1);
+      B(SKIN, 4, 1, 8, 8);
+      B(SKIN, 3, 4, 1, 2); B(SKIN, 12, 4, 1, 2);
+      B("#222222", 5, -3, 6, 3);                   // top hat
+      B("#ffd23f", 5, -1, 6, 1);                   // gold hat band
+      B("#222222", 3, 0, 10, 1);                   // hat brim
+      B("#6b5a4a", 5, 3, 2, 1); B("#6b5a4a", 9, 3, 2, 1);      // eyebrows
+      B("#ffd23f", 5, 4, 2, 2); B("#ffd23f", 9, 4, 2, 2);      // gold coin eyes
+      B("#b8860b", 6, 5, 1, 1); B("#b8860b", 9, 5, 1, 1);
+      B("#e0a98a", 7, 6, 2, 1);                    // nose
+      B("#f0f0f0", 5, 7, 6, 1);                    // white mustache
+      B("#5a1f1f", 6, 8, 4, talking ? 2 : 1);      // grin
+      B("#ffd23f", 7, 8, 1, 1);                    // gold tooth
+    } else {                                       // the bossy burger boss
+      B("#2a3448", 2, 10, 12, 14);                 // suit
+      B("#3d4a63", 3, 10, 10, 14);
+      B("#ffffff", 6, 10, 4, 5);                   // shirt
+      B("#c0392b", 7, 10, 2, 7);                   // tie
+      B("#2a3448", 5, 10, 1, 4); B("#2a3448", 10, 10, 1, 4);   // lapels
+      B(SKIN, 6, 9, 4, 1);                         // neck
+      B(SKIN, 4, 1, 8, 8);                         // face
+      B(SKIN, 3, 4, 1, 2); B(SKIN, 12, 4, 1, 2);   // ears
+      B("#8a8a8a", 3, 3, 1, 3); B("#8a8a8a", 12, 3, 1, 3);     // side hair
+      B("#8a8a8a", 5, 1, 6, 1);                    // thin hair on top
+      B("#3a2a20", 5, 3, 2, 1); B("#3a2a20", 7, 4, 1, 1);      // angry eyebrows
+      B("#3a2a20", 9, 4, 1, 1); B("#3a2a20", 10, 3, 2, 1);
+      B("#222222", 6, 5, 1, 1); B("#222222", 9, 5, 1, 1);      // eyes
+      B("#e0a98a", 7, 6, 2, 1);                    // nose
+      B("#5a3b2e", 6, 7, 4, 1);                    // mustache
+      B("#5a1f1f", 7, 8, 2, talking ? 2 : 1);      // mouth
+    }
+  }
+
+  function drawScene() {
+    drawOffice();
+    if (!scene) return;
+    var l = scene.lines[scene.i];
+    var typing = scene.shown < l.text.length;
+    if (l.who === "boss") {
+      drawBoss(scene.look, 228, 32, 5, typing && Math.floor(performance.now() / 110) % 2 === 0);
+    } else {
+      rect("rgba(0,0,0,0.2)", 34, 138, 54, 4);
+      spriteScaled(PLAYER_BODY, PLAYER_PAL, 36, 80, 5);
+    }
+    drawDesk();
+  }
+
+  // =====================================================================
+  //  DRAWING: restaurant
+  // =====================================================================
+  function drawCustomer(c, i) {
+    var x = TABLES[i] - 5;
+    var y = 48 + Math.round(Math.sin(c.t * 2) * 0.6);
+    sprite(CUSTOMER, { h: c.hair, s: SKIN, c: c.shirt, k: "#222222" }, x, y);
+    if (c.patience > 0.6) {
+      rect("#222", x + 3, y + 4, 1, 1); rect("#222", x + 6, y + 4, 1, 1);
+      rect("#222", x + 4, y + 5, 2, 1);
+    } else if (c.patience > 0.3) {
+      rect("#222", x + 4, y + 5, 2, 1);
+    } else {
+      rect("#c0392b", x + 3, y + 5, 1, 1); rect("#c0392b", x + 6, y + 5, 1, 1);
+      rect("#c0392b", x + 4, y + 4, 2, 1);
+      rect("#222", x + 2, y + 2, 2, 1); rect("#222", x + 6, y + 2, 2, 1);
+    }
+  }
+
+  function drawTable(tx) {
+    var T = R.table;
+    rect(T.top, tx - 18, 60, 36, 12);
+    rect(T.front, tx - 18, 72, 36, 6);
+    rect(T.line, tx - 14, 64, 28, 1);
+    if (R.candle) {                                // fancy candle on the pizzeria tables
+      rect("#f5e6a8", tx + 11, 56, 2, 4);
+      rect("#ffb020", tx + 11, 54, 2, 2);
+    }
+  }
+
+  function drawOrder(c, i) {
+    var tx = TABLES[i];
+    rect("#222", tx - 11, 22, 22, 23);
+    rect("#fff", tx - 10, 23, 20, 21);
+    rect("#222", tx - 1, 45, 2, 2);
+    rect("#fff", tx - 1, 45, 2, 1);
+    R.dish(c.order, tx, 41);
+    var color = c.patience > 0.6 ? "#6fd36f" : c.patience > 0.3 ? "#ffd24d" : "#ff6b5e";
+    rect("#222", tx - 16, 79, 32, 5);
+    rect("#3a2a20", tx - 15, 80, 30, 3);
+    rect(color, tx - 15, 80, Math.max(0, Math.round(30 * c.patience)), 3);
+  }
+
+  function drawStation(s) {
+    var T = R.counter;
+    rect(T.top, s.x, 204, 48, 10);
+    rect(T.front, s.x, 214, 48, 26);
+    rect(T.line, s.x, 214, 48, 2);
+    if (s.kind === "trash") {
+      rect("#5b6571", s.x + 14, 194, 20, 3);
+      rect("#7b8794", s.x + 16, 197, 16, 17);
+      rect("#5b6571", s.x + 22, 200, 2, 10);
+      rect("#5b6571", s.x + 26, 200, 2, 10);
+    } else {
+      rect(T.edge, s.x + 6, 205, 36, 8);
+      rect(FOOD[s.kind], s.x + 8, 206, 32, 6);
+      for (var i = 0; i < 32; i += 6) rect("rgba(255,255,255,0.3)", s.x + 9 + i, 207, 2, 2);
+    }
+    var name = s.kind === "trash" ? t("trash") : s.num + " " + t("f_" + s.kind);
+    label(name, s.x + 24, 232, T.text);
+  }
+
+  function drawPlayer() {
+    var bob = p.moving && Math.floor(p.step) % 2 ? 1 : 0;
+    var legs = LEGS[p.moving ? Math.floor(p.step) % 2 : 0];
+    rect("rgba(0,0,0,0.2)", p.x, p.y + 13, 10, 2);
+    sprite(PLAYER_BODY.concat(legs), PLAYER_PAL, p.x, p.y - bob, p.dir < 0);
+    if (tray.length) R.dish(tray, Math.round(p.x + 5), Math.round(p.y - 2 - bob));
+    if (S.prompt && mode === "play" && nearest()) {
+      var px = p.x < 296 ? p.x + 12 : p.x - 13;
+      var py = p.y + 1 + Math.round(Math.sin(performance.now() / 150));   // gentle bounce
+      rect("#1e5c2a", px, py, 11, 10);            // dark green border
+      rect("#3ecf4a", px + 1, py + 1, 9, 8);      // green fill
+      rect("#8dff98", px + 1, py + 1, 9, 1);      // highlight
+      sprite(CHECK, { "#": "#ffffff" }, px + 2, py + 2);
+    }
+  }
+
+  function drawDiner() {
+    R.bg();
+    customers.forEach(function (c, i) { if (c) drawCustomer(c, i); });
+    TABLES.forEach(drawTable);
+    customers.forEach(function (c, i) { if (c) drawOrder(c, i); });
+    STATIONS.forEach(drawStation);
+    drawPlayer();
+    floaters.forEach(function (f) { label(f.str, f.x, f.y - (1 - f.life / 1000) * 12, f.color); });
+
+    var info = "";
+    if (mode !== "menu") {
+      info = runType === "story" ? t("dayInfo", t("rs_" + storyId), dayNo) : t("endlessInfo", t("rs_" + curRid));
+    }
+    $("dayInfo").textContent = info;
+    $("score").textContent = score;
+    $("served").textContent = runType === "story" ? served + "/" + goal() : served;
+    var hearts = "";
+    for (var h = 0; h < Math.max(lives, 0); h++) hearts += "\u2665";
+    $("lives").textContent = hearts;
+  }
+
+  // =====================================================================
+  //  MAIN LOOP AND INPUT
+  // =====================================================================
+  function frame(now) {
+    requestAnimationFrame(frame);                 // schedule the next frame first
+    var dt = Math.max(0, Math.min(now - last, 50));
+    last = now;
+    if (now - lastFitTime > 400) { lastFitTime = now; fitScreen(); }   // keep everything inside the window
+    $("quit").style.visibility = (mode === "play") ? "visible" : "hidden";
+    if (mode === "play" && !paused) update(dt);   // the game freezes while settings are open
+    if (mode === "scene") { updateScene(dt); drawScene(); }
+    else drawDiner();
+  }
+
+  window.addEventListener("keydown", function (e) {
+    var k = e.key.toLowerCase();
+    if (settingsOpen()) {                         // let buttons and checkboxes work normally
+      if (k === "escape") closeSettings();
+      return;
+    }
+    if (mode === "scene") {
+      if (k === "e" || k === " " || k === "enter") {
+        e.preventDefault();
+        if (!e.repeat) advanceScene();
+      }
+      return;
+    }
+    if (adminOpen()) {                            // admin menu: Esc closes it
+      if (k === "escape") closeAdmin();
+      return;
+    }
+    if (mode === "menu") {
+      // Typing a-d-m-i-n on the main menu unlocks the admin menu
+      if (rebuild === showMenu && k.length === 1) {
+        adminBuf = (adminBuf + k).slice(-5);
+        if (adminBuf === "admin") {
+          adminBuf = "";
+          adminUnlocked = true;
+          toast(t("adminOn"));
+          openAdmin();
+        }
+      }
+      return;
+    }
+    if (mode !== "play") return;
+    if (k === "escape" || k === "p") { openSettings(); return; }
+    if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].indexOf(k) >= 0) e.preventDefault();
+    keys[k] = true;
+    if (!e.repeat && (k === "e" || k === " " || k === "enter")) interact();
+  });
+  window.addEventListener("keyup", function (e) { keys[e.key.toLowerCase()] = false; });
+
+  // =====================================================================
+  //  START
+  // =====================================================================
+  reset();
+  applyLanguage();
+  showMenu();
+  fitScreen();
+  last = performance.now();
+  requestAnimationFrame(frame);
+
+  $("status").textContent = t("loadedOk");
+  setTimeout(function () { $("status").textContent = ""; }, 3000);
+</script>
+</body>
+</html>
